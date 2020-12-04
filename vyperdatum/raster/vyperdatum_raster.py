@@ -27,20 +27,24 @@ def load_config(config_filename = 'vyperdatum.config'):
         config_file_section = config_file[section]
         for key in config_file_section:
             config[key] = config_file_section[key]
-
+    
     if 'loggername' in config:
+        global LOGGER
         LOGGER = logging.getLogger(config['loggername'])
-        
     if 'inpath' in config:
-        inpath = config['inpath']
-        inpath = fr'{inpath}'
+        global inpath
+        tmp = config['inpath']
+        inpath = fr'{tmp}'
     if 'outpath' in config:
-        outpath = config['outpath']
-        outpath = fr'{outpath}'
-        
+        global outpath
+        tmp = config['outpath']
+        outpath = fr'{tmp}'
     if 'vdatum_directory' in config:
-        VDATUM_DIRECTORY = config['vdatum_directory']
-        VDATUM_DIRECTORY = fr'{VDATUM_DIRECTORY}'
+        global VDATUM_DIRECTORY
+        tmp = config['vdatum_directory']
+        VDATUM_DIRECTORY = fr'{tmp}'
+    else:
+        raise ValueError('No VDatum path defined.')
 
 def check_gdal_version():
     """
@@ -382,10 +386,10 @@ def clear_logger():
             
 if __name__ == '__main__':
     if len(sys.argv) == 1:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        config_filenames = glob(os.path.join(script_dir, '*.config'))
+        load_config()
     else:
-        config_filenames = sys.argv[1:]
+        config_filename = sys.argv[1]
+        load_config(config_filename)
     set_logger(outpath)
     update_vdatum_data_directory()
     check_gdal_version()
