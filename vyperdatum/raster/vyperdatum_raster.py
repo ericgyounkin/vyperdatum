@@ -11,35 +11,36 @@ from gdal import ogr
 import rasterio
 gdal.UseExceptions()
 
+LOGGER = logging.getLogger('vyperdatum')
 
-CONFIGURATION_FILENAME = 'vyperdatum.config'
-if not os.path.isfile(CONFIGURATION_FILENAME):
-    raise ValueError(f'file not found: {CONFIGURATION_FILENAME}')
-config = {}
-config_file = configparser.ConfigParser()
-config_file.read(CONFIGURATION_FILENAME)
-sections = config_file.sections()
-for section in sections:
-    config_file_section = config_file[section]
-    for key in config_file_section:
-        config[key] = config_file_section[key]
+def load_config(config_filename = 'vyperdatum.config'):
+    """
+    Load the provided configuration file.
+    """
+    if not os.path.isfile(config_filename):
+        raise ValueError(f'file not found: {config_filename}')
+    config = {}
+    config_file = configparser.ConfigParser()
+    config_file.read(config_filename)
+    sections = config_file.sections()
+    for section in sections:
+        config_file_section = config_file[section]
+        for key in config_file_section:
+            config[key] = config_file_section[key]
 
-if 'loggername' in config:
-    LOGGER = logging.getLogger(config['loggername'])
-else:
-    LOGGER = logging.getLogger('vyperdatum')
-    
-if 'inpath' in config:
-    inpath = config['inpath']
-    inpath = fr'{inpath}'
-if 'outpath' in config:
-    outpath = config['outpath']
-    outpath = fr'{outpath}'
-    
-if 'vdatum_directory' in config:
-    VDATUM_DIRECTORY = config['vdatum_directory']
-    VDATUM_DIRECTORY = fr'{VDATUM_DIRECTORY}'
-
+    if 'loggername' in config:
+        LOGGER = logging.getLogger(config['loggername'])
+        
+    if 'inpath' in config:
+        inpath = config['inpath']
+        inpath = fr'{inpath}'
+    if 'outpath' in config:
+        outpath = config['outpath']
+        outpath = fr'{outpath}'
+        
+    if 'vdatum_directory' in config:
+        VDATUM_DIRECTORY = config['vdatum_directory']
+        VDATUM_DIRECTORY = fr'{VDATUM_DIRECTORY}'
 
 def check_gdal_version():
     """
@@ -380,6 +381,11 @@ def clear_logger():
             LOGGER.removeHandler(handler)
             
 if __name__ == '__main__':
+    if len(sys.argv) == 1:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        config_filenames = glob(os.path.join(script_dir, '*.config'))
+    else:
+        config_filenames = sys.argv[1:]
     set_logger(outpath)
     update_vdatum_data_directory()
     check_gdal_version()
