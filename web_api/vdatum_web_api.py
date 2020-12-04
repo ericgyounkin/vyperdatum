@@ -1,14 +1,17 @@
-# run in pydro27 env
-import urllib2
+try:  # python27
+    import urllib2
+except ImportError:  # python38
+    from urllib.request import Request, urlopen
 import json
 import time
 
 
-def vdatum_web_api(src_lat, src_lon, src_height,
-                   region='CONTIGUOUS',
-                   s_h_frame='NAD83_2011', s_v_frame='MLLW',
+def vdatum_web_api(src_lat, src_lon, src_height, region='CONTIGUOUS', s_h_frame='NAD83_2011', s_v_frame='MLLW',
                    t_h_frame='NAD83_2011', t_v_frame='NAVD88'):
-    """https://vdatum.noaa.gov/docs/services.html
+    """
+    https://vdatum.noaa.gov/docs/services.html
+
+    Run under python27, using the urllib2 module
 
     Parameters
     ----------
@@ -31,8 +34,12 @@ def vdatum_web_api(src_lat, src_lon, src_height,
            %(src_lat, src_lon, src_height, region, s_h_frame, s_v_frame, t_h_frame, t_v_frame)
 
     print(url)
-    request = urllib2.Request(url)
-    response = urllib2.urlopen(request, timeout=20).read()
+    try:
+        request = urllib2.Request(url)
+        response = urllib2.urlopen(request, timeout=20).read()
+    except:
+        request = Request(url)
+        response = urlopen(request, timeout=20).read()
     data = json.loads(response)
     return (float(data['tar_lon']), float(data['tar_lat']), float(data['tar_height']))
 

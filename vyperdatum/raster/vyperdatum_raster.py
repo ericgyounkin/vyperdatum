@@ -62,12 +62,14 @@ def check_gdal_version():
         LOGGER.error(msg)
         raise ValueError(msg)
 
+
 def update_vdatum_data_directory():
     global VDATUM_DIRECTORY
     orig_proj_paths = pyproj.datadir.get_data_dir()
     if VDATUM_DIRECTORY not in orig_proj_paths:
         pyproj.datadir.append_data_dir(VDATUM_DIRECTORY)
-    
+
+
 def get_gtx_grid_list():
     """
     Built a dicionary of all available VDatum grids.
@@ -85,6 +87,7 @@ def get_gtx_grid_list():
         gtx_subpath = os.path.join(gtx_folder, gtx_file)
         grids[gtx_name] = gtx_subpath
     return grids
+
 
 def get_vdatum_region_polygons():
     """
@@ -106,6 +109,7 @@ def get_vdatum_region_polygons():
         root_dir, kml_name = os.path.split(kml_path)
         geom[kml_name] = kml
     return geom
+
 
 def get_interesecting_vdatum_regions(datafilepath):
     """
@@ -198,6 +202,7 @@ def run_pipeline(xx, yy, zz, incrs, region_name):
     LOGGER.debug(f'Applying pipeline: {transformer}')
     
     return result, out_cmpd_crs
+
 
 def get_datum_sep(raster_name, transform_sampling_distance, region_list):
     """
