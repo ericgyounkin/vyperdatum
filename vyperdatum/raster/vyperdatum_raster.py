@@ -9,76 +9,478 @@ from pyproj.crs import CompoundCRS
 import gdal
 from gdal import ogr
 import rasterio
+import collections
 gdal.UseExceptions()
 
 
-CONFIGURATION_FILENAME = 'vyperdatum.config'
-if not os.path.isfile(CONFIGURATION_FILENAME):
-    raise ValueError(f'file not found: {CONFIGURATION_FILENAME}')
-config = {}
-config_file = configparser.ConfigParser()
-config_file.read(CONFIGURATION_FILENAME)
-sections = config_file.sections()
-for section in sections:
-    config_file_section = config_file[section]
-    for key in config_file_section:
-        config[key] = config_file_section[key]
-
-if 'loggername' in config:
-    LOGGER = logging.getLogger(config['loggername'])
-else:
-    LOGGER = logging.getLogger('vyperdatum')
-    
-if 'inpath' in config:
-    inpath = config['inpath']
-    inpath = fr'{inpath}'
-if 'outpath' in config:
-    outpath = config['outpath']
-    outpath = fr'{outpath}'
-    
-if 'vdatum_directory' in config:
-    VDATUM_DIRECTORY = config['vdatum_directory']
-    VDATUM_DIRECTORY = fr'{VDATUM_DIRECTORY}'
-
-
-def check_gdal_version():
+class VyperRaster:
     """
-    Check the version of gdal imported to ensure it meets the requirements
-    of this script
+    Operational Class
+    """
+    def __init__(self, input_file: str = None, output_path: str = None):
+        """
+        Include an input file and a path to an output, or optionally leave these as None to use the last stored value(s)
+
+        Parameters
+        ----------
+        input_file
+            Input raster to transform
+        output_path
+            Path to where you want to save the output
+        """
+
+        self.config = VyperConfig()
+
+        if input_file is None:
+            self.input_file = self.config.settings['inpath']
+        else:
+            self.config.settings['inpath'] = input_file
+            self.input_file = input_file
+        if output_path is None:
+            self.output_path = self.config.settings['outpath']
+        else:
+            self.config.settings['outpath'] = output_path
+            self.output_path = output_path
+        self._validate_inputs()
+
+        self.intersects = None
+
+        self.input_elevation = None
+        self.input_uncertainty = None
+        self.input_contributor = None
+
+        self.input_transform = None
+        self.input_crs = None
+        self.input_nodata = None
+        self.input_profile = None
+        self.input_band_names = None
+
+    def _validate_inputs(self):
+        """
+        Ensure the input file exists and the output file directory also exists
+        """
+
+        if not os.path.exists(self.input_file):
+            raise ValueError('VyperDatum: {} does not exist'.format(self.input_file))
+        basedir, output_name = os.path.split(self.output_path)
+        if not os.path.exists(basedir):
+            raise ValueError('VyperDatum: base folder for {} does not exist: {}'.format(self.output_path, basedir))
+
+        with rasterio.open(self.input_file) as raster:
+            self.input_elevation, self.input_uncertainty, self.input_contributor = raster.read()
+            self.input_transform = raster.transform
+            self.input_crs = raster.crs
+            self.input_nodata = raster.nodata
+            self.input_profile = raster.profile
+            self.input_band_names = raster.descriptions
+            expected_bandnames = ('Elevation', 'Uncertainty', 'Contributor')
+            if self.input_band_names != expected_bandnames:
+                raise ValueError('VyperRaster: Expected {} band names, found {}'.format(expected_bandnames, self.input_band_names))
+
+    def get_interesecting_vdatum_regions(self):
+        """
+        Find the vdatum regions that intersect the given data.
+        """
+        dataset = gdal.Open(self.input_file)
+        is_raster = dataset.RasterCount > 0
+        if is_raster:
+            # get raster bounds
+            crs = pyproj.CRS.from_wkt(dataset.GetProjectionRef())
+            transform = dataset.GetGeoTransform()
+            pixel_width = transform[1]
+            pixel_height = transform[5]
+            cols = dataset.RasterXSize
+            rows = dataset.RasterYSize
+            x0 = transform[0]
+            y1 = transform[3]
+            x1 = x0 + cols * pixel_width
+            y0 = y1 - rows * pixel_height
+            if crs.is_projected:
+                unproject = pyproj.Proj(proj='utm', zone=19, ellps='WGS84')
+                ul = unproject(x0, x1, inverse=True)
+                ur = unproject(x1, y1, inverse=True)
+                lr = unproject(x1, y0, inverse=True)
+                ll = unproject(x0, y0, inverse=True)
+            else:
+                ul = (x0, y1)
+                ur = (x1, y1)
+                lr = (x1, y0)
+                ll = (x0, y0)
+            # build polygon from raster
+            ring = ogr.Geometry(ogr.wkbLinearRing)
+            ring.AddPoint(ul[0], ul[1])
+            ring.AddPoint(ur[0], ur[1])
+            ring.AddPoint(lr[0], lr[1])
+            ring.AddPoint(ll[0], ll[1])
+            ring.AddPoint(ul[0], ul[1])
+            dataGeometry = ogr.Geometry(ogr.wkbPolygon)
+            dataGeometry.AddGeometry(ring)
+        else:
+            raise NotImplementedError('Not handling XYZ data yet')
+        dataset = None
+        # see if the regions intersect with the provided geometries
+        intersecting_regions = []
+        for region in self.config.polygon_files:
+            vector = ogr.Open(self.config.polygon_files[region])
+            layer_count = vector.GetLayerCount()
+            for m in range(layer_count):
+                layer = vector.GetLayerByIndex(m)
+                feature_count = layer.GetFeatureCount()
+                for n in range(feature_count):
+                    feature = layer.GetFeature(n)
+                    feature_name = feature.GetField(0)
+                    if feature_name[:15] == 'valid-transform':
+                        valid_vdatum_poly = feature.GetGeometryRef()
+                        if dataGeometry.Intersect(valid_vdatum_poly):
+                            intersecting_regions.append(region)
+            vector = None
+        self.intersects = intersecting_regions
+
+    def run_pipeline(self, yy, zz, incrs, region_name):
+        """
+        MLLW to NAVD88
+        """
+
+        req_hcrs_epsg = 26919
+        req_vcrs_epsg = 'mllw'
+        out_vcrs_epsg = 5703
+
+        # parse the provided CRS
+        cmpd_incrs = CompoundCRS.from_wkt(incrs.to_wkt())
+        if len(cmpd_incrs.sub_crs_list) == 2:
+            inhcrs, invcrs = cmpd_incrs.sub_crs_list
+            assert inhcrs.to_epsg() == req_hcrs_epsg
+            assert invcrs.to_epsg() == req_vcrs_epsg
+        elif not cmpd_incrs.is_vertical:
+            assert incrs.to_epsg() == req_hcrs_epsg
+
+        # build the output crs
+        comp_crs = CompoundCRS(name="NAD83 UTM19 + NAVD88", components=[f"EPSG:{req_hcrs_epsg}", f"EPSG:{out_vcrs_epsg}"])
+        # get the transform at the sparse points
+        transformer = Transformer.from_pipeline(f'proj=pipeline \
+                                                  step inv proj=utm zone=19 \
+                                                  step inv proj=vgridshift grids={self.config.grid_files[f"{region_name}/mllw.gtx"]} \
+                                                  step proj=vgridshift grids={self.config.grid_files[f"{region_name}/tss.gtx"]} \
+                                                  step proj=utm zone=19')
+
+        result = transformer.transform(xx=xx, yy=yy, zz=zz)
+        self.config.logger.debug('Applying pipeline: {}'.format(transformer))
+        return result, comp_crs
+
+    def get_datum_sep(self, transform_sampling_distance):
+        """
+        Use the provided raster and pipeline to get the separation over the raster area.
+
+        Returns
+        -------
+        sep
+
+        """
+        if self.intersects is None:
+            self.get_interesecting_vdatum_regions()
+        new_crs = None
+        # with rasterio.open(self.input_file) as raster:
+        #     elev = raster.read(1)
+        #     transform = raster.transform
+        #     crs = raster.crs
+        #     nodata = raster.nodata
+        #     profile = raster.profile
+        # get sparse raster x and y positions
+        sy, sx = self.input_profile['height'], self.input_profile['width']
+        resy, resx = self.input_transform[4], self.input_transform[0]
+        y0, x0 = self.input_transform[5], self.input_transform[2]
+        y1 = y0 + sy * resy
+        x1 = x0 + sx * resx
+        nx = np.round(np.abs((x1 - x0) / transform_sampling_distance)).astype(int)
+        ny = np.round(np.abs((y1 - y0) / transform_sampling_distance)).astype(int)
+        x_sampled = np.linspace(x0, x1, nx)
+        y_sampled = np.linspace(y0, y1, ny)
+        yy, xx = np.meshgrid(y_sampled, x_sampled, indexing='ij')
+        zz = np.zeros(yy.shape)
+        y, x = np.mgrid[y0:y1:resy, x0:x1:resx]
+        sep = np.full(y.shape, np.nan)
+
+        for region in self.intersects:
+            start = datetime.now()
+            try:
+                result, new_crs = run_pipeline(xx.flatten(), yy.flatten(), zz.flatten(), self.input_crs, region)
+            except pyproj.ProjError as e:
+                print_paths = '\n'.join(pyproj.datadir.get_data_dir().split(';'))
+                self.config.logger.error('Proj pipeline failed. pyproj paths: \n{}'.format(print_paths))
+                raise e
+            dt = datetime.now() - start
+            self.config.logger.debug(f'Transforming {len(yy.flatten())} points took {dt} seconds for {region}')
+            vals = result[2].flatten()
+            valid_idx = np.squeeze(np.argwhere(~np.isinf(vals)))
+
+            if len(valid_idx) == 0:
+                self.config.logger.debug(
+                    'No valid points found from gridding in {region}. Putting all points through proj pipeline directly.')
+            else:
+                self.config.logger.debug('interpolating to original grid for {region}')
+                start = datetime.now()
+                points = np.array([result[1][valid_idx], result[0][valid_idx]]).T
+                valid_vals = vals[valid_idx]
+                try:
+                    region_sep = griddata(points, valid_vals, (y, x))
+                    idx = ~np.isnan(region_sep)
+                    sep[idx] = region_sep[idx]
+                except Exception as error:
+                    msg = f'{error.__class__.__name__}: {error}\n\n'
+                    self.config.logger.error(msg)
+                    return None, None
+                dt = datetime.now() - start
+                self.config.logger.debug(f'Interpolating {len(y.flatten())} points took {dt} seconds for {region}')
+            missing_idx = np.where(np.isnan(sep) & (self.input_elevation != self.input_nodata))
+            num_nan = len(missing_idx[0])
+            if num_nan > 0:
+                missing, new_crs = run_pipeline(x[missing_idx], y[missing_idx], np.zeros(num_nan), self.input_crs, region)
+                missing_sep = missing[2]
+                still_inf_idx = np.where(np.isinf(missing_sep))
+                missing_sep[still_inf_idx] = np.nan
+                sep[missing_idx] = missing_sep
+        return sep, new_crs
+
+    def apply_sep(self, sep, new_crs, pass_untransformed=True):
+        """
+
+
+        Parameters
+        ----------
+        outfile : TYPE
+            DESCRIPTION.
+        sep : TYPE
+            DESCRIPTION.
+
+        Returns
+        -------
+        None.
+
+        """
+
+        missing_idx = np.where(np.isnan(sep) & (self.input_elevation != self.input_nodata))
+        num_nan = len(missing_idx[0])
+        self.config.logger.debug(f'Found {num_nan} values that are outside the separation model')
+        if pass_untransformed:
+            z_values = self.input_elevation[missing_idx[0], missing_idx[1]]
+            # make the new uncertainty
+            u_values = 3 - 0.06 * z_values
+            u_values[np.where(z_values > 0)] = 3.0
+            uncert = self.input_uncertainty
+            uncert[missing_idx] = u_values
+            if num_nan > 0:
+                self.config.logger.debug(
+                    f'Inserting {num_nan} values that were not transformed into new file, but applying CATZOC D vertical uncertainty.')
+        elev = (self.input_elevation - sep)
+        elev[np.where(np.isnan(elev))] = self.input_nodata
+        if pass_untransformed:
+            elev[missing_idx] = z_values
+            self.input_elevation = elev
+            self.input_uncertainty = uncert
+        else:
+            self.input_elevation[missing_idx[0], missing_idx[1]] = self.input_nodata
+            self.input_uncertainty[missing_idx[0], missing_idx[1]] = self.input_nodata
+            self.input_contributor[missing_idx[0], missing_idx[1]] = self.input_nodata
+
+        tiffdata = np.stack([self.input_elevation, self.input_uncertainty])
+        tiffdata = np.round(tiffdata.astype(np.float), decimals=2).astype(np.float32)
+        tiffnames = self.input_band_names[:2]
+
+        write_gdal_geotiff(self.output_path, tiffdata, new_crs, self.input_transform, self.input_nodata, tiffnames)
+
+    def transform_raster(self):
+        """
+
+
+        Returns
+        -------
+        None.
+
+        """
+        if self.intersects is None:
+            self.get_interesecting_vdatum_regions()
+        self.config.logger.debug(f'Begin work on {os.path.basename(self.input_file)}')
+        if len(self.intersects) > 0:
+            sep, crs = self.get_datum_sep(100)
+            apply_sep(sep, crs)
+        else:
+            self.config.logger.debug(f'no region found for {os.path.basename(datapath)}')
+
+    def config_logger(self):
+        self.config.logger.setLevel(logging.DEBUG)
+        log_formatter = logging.Formatter('[%(asctime)s] %(name)-9s %(levelname)-8s: %(message)s')
+
+        log_name = f'_to_NAVD88_{datetime.now():%Y%m%d_%H%M%S}.log'
+        log_filename = os.path.join(outpath, log_name)
+        log_file = logging.FileHandler(log_filename)
+        log_file.setFormatter(log_formatter)
+        log_file.setLevel(logging.DEBUG)
+        self.config.logger.addHandler(log_file)
+
+        output_console = logging.StreamHandler(sys.stdout)
+        output_console.setFormatter(log_formatter)
+        output_console.setLevel(logging.DEBUG)
+        self.config.logger.addHandler(output_console)
+
+    def close_logger(self):
+        for handler in self.config.logger.handlers[:]:
+            handler.close()
+            self.config.logger.removeHandler(handler)
+
+
+class VyperConfig:
+    """
+    Contains all files and configuration information for VyperDatum
+    """
+
+    def __init__(self):
+        self.settings_filepath = None  # file path to config file
+        self.settings_object = None  # ConfigParser object generated in _load_settings
+        self.default_settings = {'vdatum_directory': r'C:\VDatum', 'inpath': '', 'outpath': '', 'logger_name': ''}
+
+        self.grid_files = {}
+        self.polygon_files = {}
+
+        self.settings = VyperSettings(self)
+        self._load_settings()
+
+        self.logger = None
+        self._init_logger()
+
+        self.gdal_version = None
+        self.get_gdal_version()
+
+    def _load_settings(self):
+        """
+        Call on initializing the class, will find an existing config file or create a new one if it does not exist
+        Will then populate the settings attribute with existing settings or the default settings we wrote to the
+        new config file.
+        """
+
+        vyperdatum_folder = os.path.join(os.getenv('APPDATA'), 'vyperdatum')
+        vyperdatum_file = os.path.join(vyperdatum_folder, 'vyperdatum.config')
+        self.settings_filepath = vyperdatum_file
+
+        if os.path.exists(vyperdatum_file):
+            self.settings_object, settings = read_from_config_file(vyperdatum_file)
+        else:
+            if not os.path.exists(vyperdatum_folder):
+                print('generating appdata folder: {}'.format(vyperdatum_folder))
+                os.makedirs(vyperdatum_folder)
+            print('writing a new appdata config file: {}'.format(vyperdatum_file))
+            self.settings_object, settings = create_new_config_file(vyperdatum_file)
+
+        # populate our settings with the new/existing settings found
+        if settings is not None:
+            for ky, val in settings.items():
+                self.settings[ky] = val
+
+    def _init_logger(self):
+        """
+        Build the logger instance
+        """
+
+        if 'logger_name' in self.settings:
+            self.logger = logging.getLogger(self.settings['logger_name'])
+        else:
+            self.logger = logging.getLogger('vyperdatum')
+
+    def _set_vdatum_directory(self, value):
+        """
+        Called when self.settings['vdatum_directory'] is updated.  We find all the grids and polygons in the vdatum
+        directory and save the dicts to the attributes in this class.
+        """
+
+        # special case for vdatum directory, we want to give pyproj the new path if it isn't there already
+        orig_proj_paths = pyproj.datadir.get_data_dir()
+        if value not in orig_proj_paths:
+            pyproj.datadir.append_data_dir(value)
+
+        # also want to populate grids and polygons with what we find
+        newgrids = get_gtx_grid_list(value)
+        for gname, gpath in newgrids.items():
+            self.grid_files[gname] = gpath
+        newpolys = get_vdatum_region_polygons(value)
+        for pname, ppath in newpolys.items():
+            self.polygon_files[pname] = ppath
+
+    def get_gdal_version(self):
+        """
+        Check the version of gdal imported to ensure it meets the requirements of this class
+        """
+
+        version = gdal.VersionInfo()
+        major = int(version[0])
+        minor = int(version[1:3])
+        bug = int(version[3:5])
+        if not (major == 3 and minor >= 1):
+            msg = 'The version of GDAL must be >= 3.1.  Version found: {}.{}.{}'.format(major, minor, bug)
+            self.logger.error(msg)
+#            raise ValueError(msg)
+        self.gdal_version = version
+
+
+class VyperSettings(collections.UserDict):
+    """
+    Inherit from UserDict, provide a dictionary like object that we can save settings to and simultaneously update
+    the configfile in VyperConfig.
+
+    vyp = VyperConfig()
+    vyp.settings['vdatum_directory'] = r'C:\vdatum_all_20201203\vdatum'
+    vyp.settings_object.get('Default', 'vdatum_directory')
+    Out[7]: 'C:\\vdatum_all_20201203\\vdatum'
+    """
+
+    def __init__(self, parent: VyperConfig = None):
+        super().__init__()
+        self.parent = parent
+
+    def __setitem__(self, key: str, value: str):
+        """
+        setting an item in the dict will update the settings object and run any specific methods relevant to that key,
+        for example, vdatum_directory changes call the _set_vdatum_directory in the VyperConfig object
+        """
+
+        super().__setitem__(key, value)
+
+        if self.parent is None:
+            raise ValueError('SettingsDict: parent object (VyperConfig) required for operation')
+
+        # special case for vdatum directory
+        if key == 'vdatum_directory':
+            self.parent._set_vdatum_directory(value)
+
+        # also update the config file
+        self.parent.settings_object.set('Default', key, value)
+        with open(self.parent.settings_filepath, 'w') as configfile:
+            self.parent.settings_object.write(configfile)
+
+
+def get_gtx_grid_list(vdatum_directory: str, logger: logging.Logger = None):
+    """
+    Search the vdatum directory to find all gtx files
+
+    Parameters
+    ----------
+    vdatum_directory
+        absolute folder path to the vdatum directory
+    logger
+        Logger instance if you wish to include it
 
     Returns
     -------
-    None.
-
+    dict
+        dictionary of {grid name: grid path, ...}
     """
-    version = gdal.VersionInfo()
-    major = int(version[0])
-    minor = int(version[1:3])
-    bug = int(version[3:5])
-    if major == 3 and minor >= 1:
-        pass
-    else:
-        msg = f'The version of GDAL must be >= 3.1.  Version found: {version}'
-        LOGGER.error(msg)
-        raise ValueError(msg)
 
-
-def update_vdatum_data_directory():
-    global VDATUM_DIRECTORY
-    orig_proj_paths = pyproj.datadir.get_data_dir()
-    if VDATUM_DIRECTORY not in orig_proj_paths:
-        pyproj.datadir.append_data_dir(VDATUM_DIRECTORY)
-
-
-def get_gtx_grid_list():
-    """
-    Built a dicionary of all available VDatum grids.
-    """
-    global VDATUM_DIRECTORY
-    search_path = os.path.join(VDATUM_DIRECTORY, '*/*.gtx')
+    search_path = os.path.join(vdatum_directory, '*/*.gtx')
     gtx_list = glob.glob(search_path)
     if len(gtx_list) == 0:
-        raise ValueError(f'No GTX files found in the provided VDatum directory: {VDATUM_DIRECTORY}')
+        errmsg = 'No GTX files found in the provided VDatum directory: {}'.format(vdatum_directory)
+        if logger is None:
+            print(errmsg)
+        else:
+            self.logger.warning(errmsg)
     grids = {}
     for gtx in gtx_list:
         gtx_path, gtx_file = os.path.split(gtx)
@@ -89,20 +491,31 @@ def get_gtx_grid_list():
     return grids
 
 
-def get_vdatum_region_polygons():
-    """
-    Get a list of all the kml files that are in the VDatum directory.
+def get_vdatum_region_polygons(vdatum_directory: str, logger: logging.Logger = None):
+    """"
+    Search the vdatum directory to find all kml files
+
+    Parameters
+    ----------
+    vdatum_directory
+        absolute folder path to the vdatum directory
+    logger
+        Logger instance if you wish to include it
 
     Returns
     -------
-    List
-
+    dict
+        dictionary of {kml name: kml path, ...}
     """
-    global VDATUM_DIRECTORY
-    search_path = os.path.join(VDATUM_DIRECTORY, '*/*.kml')
+
+    search_path = os.path.join(vdatum_directory, '*/*.kml')
     kml_list = glob.glob(search_path)
     if len(kml_list) == 0:
-        raise ValueError(f'No kml files found in the provided VDatum directory: {VDATUM_DIRECTORY}')
+        errmsg = 'No kml files found in the provided VDatum directory: {}'.format(vdatum_directory)
+        if logger is None:
+            print(errmsg)
+        else:
+            self.logger.warning(errmsg)
     geom = {}
     for kml in kml_list:
         kml_path, kml_file = os.path.split(kml)
@@ -111,220 +524,62 @@ def get_vdatum_region_polygons():
     return geom
 
 
-def get_interesecting_vdatum_regions(datafilepath):
+def read_from_config_file(filepath: str):
     """
-    Find the vdatum regions that intersect the given data.
-    """
-    dataset = gdal.Open(datafilepath)
-    is_raster = dataset.RasterCount > 0
-    if is_raster:
-        # get raster bounds
-        crs = pyproj.CRS.from_wkt(dataset.GetProjectionRef())
-        transform = dataset.GetGeoTransform()
-        pixelWidth = transform[1]
-        pixelHeight = transform[5]
-        cols = dataset.RasterXSize
-        rows = dataset.RasterYSize
-        x0 = transform[0]
-        y1 = transform[3]
-        x1 = x0+cols*pixelWidth
-        y0 = y1-rows*pixelHeight
-        if crs.is_projected:
-            unproject = pyproj.Proj(proj='utm', zone = 19, ellps = 'WGS84')
-            ul = unproject(x0,x1, inverse = True)
-            ur = unproject(x1, y1, inverse = True)
-            lr = unproject(x1, y0, inverse = True)
-            ll = unproject(x0, y0, inverse = True)
-        else:
-            ul = (x0, y1)
-            ur = (x1, y1)
-            lr = (x1, y0)
-            ll = (x0, y0)
-        # build polygon from raster
-        ring = ogr.Geometry(ogr.wkbLinearRing)
-        ring.AddPoint(ul[0], ul[1])
-        ring.AddPoint(ur[0], ur[1])
-        ring.AddPoint(lr[0], lr[1])
-        ring.AddPoint(ll[0], ll[1])
-        ring.AddPoint(ul[0], ul[1])
-        dataGeometry = ogr.Geometry(ogr.wkbPolygon)
-        dataGeometry.AddGeometry(ring)
-    else:
-        raise NotImplementedError('Not handling XYZ data yet')
-    dataset = None
-    # get all the regions represented by geometry files
-    geom_list = get_vdatum_region_polygons()
-    # see if the regions intersect with the provided geometries
-    intersecting_regions = []
-    for region in geom_list:
-        vector = ogr.Open(geom_list[region])
-        layer_count = vector.GetLayerCount()
-        for m in range(layer_count):
-            layer = vector.GetLayerByIndex(m)
-            feature_count = layer.GetFeatureCount()
-            for n in range(feature_count):
-                feature = layer.GetFeature(n)
-                feature_name = feature.GetField(0)
-                if feature_name[:15] == 'valid-transform':
-                    valid_vdatum_poly = feature.GetGeometryRef()
-                    if dataGeometry.Intersect(valid_vdatum_poly):
-                        intersecting_regions.append(region)
-        vector = None
-    return intersecting_regions
-    
-
-def run_pipeline(xx, yy, zz, incrs, region_name):
-    """
-    MLLW to NAVD88
-    """
-    req_hcrs_epsg = 26919
-    req_vcrs_epsg = 'mllw'
-    out_vcrs_epsg = 5703
-    # parse the provided CRS
-    cmpd_incrs = CompoundCRS.from_wkt(incrs.to_wkt())
-    if len(cmpd_incrs.sub_crs_list) == 2:
-        inhcrs, invcrs = cmpd_incrs.sub_crs_list
-        assert inhcrs.to_epsg() == req_hcrs_epsg
-        assert invcrs.to_epsg() == req_vcrs_epsg
-    elif not cmpd_incrs.is_vertical:
-        assert incrs.to_epsg() == req_hcrs_epsg
-    # build the output crs
-    out_cmpd_crs = CompoundCRS(name="NAD83 UTM19 + NAVD88", components=[f"EPSG:{req_hcrs_epsg}", f"EPSG:{out_vcrs_epsg}"])
-    # get the transform at the sparse points
-    grids = get_gtx_grid_list()
-    transformer = Transformer.from_pipeline(f'proj=pipeline \
-                                              step inv proj=utm zone=19 \
-                                              step inv proj=vgridshift grids={grids[f"{region_name}/mllw.gtx"]} \
-                                              step proj=vgridshift grids={grids[f"{region_name}/tss.gtx"]} \
-                                              step proj=utm zone=19')
-
-    result = transformer.transform(xx=xx, yy=yy, zz=zz)
-    LOGGER.debug(f'Applying pipeline: {transformer}')
-    
-    return result, out_cmpd_crs
-
-
-def get_datum_sep(raster_name, transform_sampling_distance, region_list):
-    """
-    Use the provided raster and pipeline to get the separation over the raster area.
-
-    Returns
-    -------
-    sep
-
-    """
-    with rasterio.open(raster_name) as raster:
-        elev = raster.read(1)
-        transform = raster.transform
-        crs = raster.crs
-        nodata = raster.nodata
-        profile = raster.profile
-    # get sparse raster x and y positions
-    sy, sx = profile['height'], profile['width']
-    resy, resx = transform[4], transform[0]
-    y0, x0 = transform[5], transform[2]
-    y1 = y0 + sy * resy 
-    x1 = x0 + sx * resx
-    nx = np.round(np.abs((x1 - x0) / transform_sampling_distance)).astype(int)
-    ny = np.round(np.abs((y1 - y0) / transform_sampling_distance)).astype(int)
-    x_sampled = np.linspace(x0, x1, nx)
-    y_sampled = np.linspace(y0, y1, ny)
-    yy, xx = np.meshgrid(y_sampled, x_sampled, indexing = 'ij')
-    zz = np.zeros(yy.shape)
-    y,x = np.mgrid[y0:y1:resy, x0:x1:resx]
-    sep = np.full(y.shape, np.nan)
-    
-    for region in region_list:
-        start = datetime.now()
-        try:
-            result, new_crs = run_pipeline(xx.flatten(), yy.flatten(), zz.flatten(), crs, region)
-        except pyproj.ProjError as e:
-            print_paths = '\n'.join(pyproj.datadir.get_data_dir().split(';'))
-            LOGGER.error(f'Proj pipeline failed. pyproj paths: \n{print_paths}')
-            raise e
-        dt = datetime.now() - start
-        LOGGER.debug(f'Transforming {len(yy.flatten())} points took {dt} seconds for {region}')
-        vals = result[2].flatten()
-        valid_idx = np.squeeze(np.argwhere(~np.isinf(vals)))
-        
-        if len(valid_idx) == 0:
-            LOGGER.debug('No valid points found from gridding in {region}. Putting all points through proj pipeline directly.')
-        else:
-            LOGGER.debug('interpolating to original grid for {region}')
-            start = datetime.now()
-            points = np.array([result[1][valid_idx],result[0][valid_idx]]).T
-            valid_vals = vals[valid_idx]
-            try:
-                region_sep = griddata(points, valid_vals, (y,x))
-                idx = ~np.isnan(region_sep)
-                sep[idx] = region_sep[idx]
-            except Exception as error:
-                msg = f'{error.__class__.__name__}: {error}\n\n'
-                LOGGER.error(msg)
-                return None, None
-            dt = datetime.now() - start
-            LOGGER.debug(f'Interpolating {len(y.flatten())} points took {dt} seconds for {region}')
-        missing_idx = np.where(np.isnan(sep) & (elev != nodata))
-        num_nan = len(missing_idx[0])
-        if num_nan > 0:
-            missing, new_crs = run_pipeline(x[missing_idx], y[missing_idx], np.zeros(num_nan), crs, region)
-            missing_sep = missing[2]
-            still_inf_idx = np.where(np.isinf(missing_sep))
-            missing_sep[still_inf_idx] = np.nan
-            sep[missing_idx] = missing_sep
-    return sep, new_crs
-
-def apply_sep(infile, outfile, sep, new_crs, pass_untransformed = True):
-    """
-    
+    Read from the generated configparser file path, return the settings and the configparser object
 
     Parameters
     ----------
-    outfile : TYPE
-        DESCRIPTION.
-    sep : TYPE
-        DESCRIPTION.
+    filepath
+        absolute filepath to the configparser object
 
     Returns
     -------
-    None.
-
+    configparser.ConfigParser
+        configparser object used to read the file
+    dict
+        settings within the file
     """
-    with rasterio.open(infile) as raster:
-            data = raster.read()
-            transform = raster.transform
-            nodata = raster.nodata
-            profile = raster.profile
-            band_names = raster.descriptions
-            
-    missing_idx = np.where(np.isnan(sep) & (data[0] != nodata))
-    num_nan = len(missing_idx[0])
-    LOGGER.debug(f'Found {num_nan} values that are outside the separation model')
-    if pass_untransformed:
-        z_values = data[0, missing_idx[0], missing_idx[1]]
-        # make the new uncertainty
-        u_values = 3 - 0.06 * z_values
-        u_values[np.where(z_values > 0)] = 3.0
-        uncert = data[1]
-        uncert[missing_idx] = u_values
-        if num_nan > 0:
-            LOGGER.debug(f'Inserting {num_nan} values that were not transformed into new file, but applying CATZOC D vertical uncertainty.')
-    elev = (data[0] - sep)
-    elev[np.where(np.isnan(elev))] = nodata
-    if pass_untransformed:
-        elev[missing_idx] = z_values
-        data[0] = elev
-        data[1] = uncert
-    else:
-        data[:, missing_idx[0], missing_idx[1]] = nodata
-    
-    data = np.round(data[:2].astype(np.float), decimals = 2).astype(np.float32)
-    band_names = band_names[:2]
-    
-    write_gdal_geotiff(outfile, data, new_crs, transform, nodata, band_names)
-    
+
+    settings = {}
+    config_file = configparser.ConfigParser()
+    config_file.read(filepath)
+    sections = config_file.sections()
+    for section in sections:
+        config_file_section = config_file[section]
+        for key in config_file_section:
+            settings[key] = config_file_section[key]
+    return config_file, settings
+
+
+def create_new_config_file(filepath: str, default_settings: dict):
+    """
+    Create a new configparser file, return the settings and the configparser object
+
+    Parameters
+    ----------
+    filepath
+        absolute filepath to the configparser object you wish to create
+    default_settings
+        new settings we want to write to the configparser file
+
+    Returns
+    -------
+    configparser.ConfigParser
+        configparser object used to read the file
+    dict
+        settings within the file
+    """
+
+    config = configparser.ConfigParser()
+    config['Default'] = default_settings
+    with open(filepath, 'w') as configfile:
+        config.write(configfile)
+    return config, default_settings
+
+
 def write_gdal_geotiff(outfile, data, pyproj_crs, transform, nodata, band_names):
-    
+
     numlyrs, rows, cols = data.shape
     driver = gdal.GetDriverByName('GTiff')
     outRaster = driver.Create(outfile, cols, rows, numlyrs, gdal.GDT_Float32)
@@ -340,51 +595,15 @@ def write_gdal_geotiff(outfile, data, pyproj_crs, transform, nodata, band_names)
     #                        'TIFFTAG_COPYRIGHT': TIFFTAG_COPYRIGHT,
     #                        })
     outband.FlushCache()
-    
-def transform_raster(infilepathname, outfilepathname):
-    """
-    
 
-    Returns
-    -------
-    None.
 
-    """
-    LOGGER.debug(f'Begin work on {os.path.basename(infilepathname)}')
-    region_list = get_interesecting_vdatum_regions(infilepathname)
-    if len(region_list) > 0:
-        sep,crs = get_datum_sep(infilepathname, 100, region_list)
-        apply_sep(infilepathname, outfilepathname, sep, crs)
-    else:
-        LOGGER.debug(f'no region found for {os.path.basename(datapath)}')
-        
-def set_logger(outpath):
-    LOGGER.setLevel(logging.DEBUG)
-    log_formatter = logging.Formatter('[%(asctime)s] %(name)-9s %(levelname)-8s: %(message)s')
-
-    log_name = f'_to_NAVD88_{datetime.now():%Y%m%d_%H%M%S}.log'
-    log_filename = os.path.join(outpath, log_name)
-    log_file = logging.FileHandler(log_filename)
-    log_file.setFormatter(log_formatter)
-    log_file.setLevel(logging.DEBUG)
-    LOGGER.addHandler(log_file)
-    
-    output_console = logging.StreamHandler(sys.stdout)
-    output_console.setFormatter(log_formatter)
-    output_console.setLevel(logging.DEBUG)
-    LOGGER.addHandler(output_console)
-    
-def clear_logger():
-    for handler in LOGGER.handlers[:]:
-            handler.close()
-            LOGGER.removeHandler(handler)
-            
 if __name__ == '__main__':
-    set_logger(outpath)
-    update_vdatum_data_directory()
-    check_gdal_version()
-    flist = glob.glob(os.path.join(inpath, '*.tiff'))
-    for datapath in flist:
-        outfilepath = os.path.join(outpath, os.path.basename(datapath))
-        transform_raster(datapath, outfilepath)
-    clear_logger()
+    pass
+    # set_logger(outpath)
+    # update_vdatum_data_directory()
+    # check_gdal_version()
+    # flist = glob.glob(os.path.join(inpath, '*.tiff'))
+    # for datapath in flist:
+    #     outfilepath = os.path.join(outpath, os.path.basename(datapath))
+    #     transform_raster(datapath, outfilepath)
+    # clear_logger()
