@@ -303,7 +303,7 @@ class VyperRaster:
         None.
 
         """
-        
+
         if self.intersects is None:
             self.get_interesecting_vdatum_regions()
         self.config.logger.debug(f'Begin work on {os.path.basename(self.input_file)}')
