@@ -1,5 +1,6 @@
 # run in pydro38_test env
 import os, sys, glob, logging, configparser
+import argparse
 from datetime import datetime
 import numpy as np
 from scipy.interpolate import griddata
@@ -15,7 +16,7 @@ gdal.UseExceptions()
 
 class VyperRaster:
     """
-    Operational Class
+    Operational Class, transforming raster
     """
     def __init__(self, input_file: str = None, output_path: str = None):
         """
@@ -24,9 +25,10 @@ class VyperRaster:
         Parameters
         ----------
         input_file
-            Input raster to transform
+            Input raster to transform.  If none, will load from config (last inputfile)
         output_path
-            Path to where you want to save the output
+            Path to where you want to save the output.  If none will load from config (last output file).  If that is
+            also not populated, will convert alongside the input_file
         """
 
         self.config = VyperConfig()
@@ -38,10 +40,12 @@ class VyperRaster:
             self.input_file = input_file
         if output_path is None:
             self.output_path = self.config.settings['outpath']
+            if self.output_path == '':
+                self.output_path = os.path.join(os.path.split(self.input_file)[0], os.path.splitext(self.input_file)[0] + '_converted.tiff')
+                self.config.settings['outpath'] = self.output_path
         else:
             self.config.settings['outpath'] = output_path
             self.output_path = output_path
-        self._validate_inputs()
 
         self.intersects = None
 
@@ -54,6 +58,8 @@ class VyperRaster:
         self.input_nodata = None
         self.input_profile = None
         self.input_band_names = None
+
+        self._validate_inputs()
 
     def _validate_inputs(self):
         """
@@ -136,7 +142,7 @@ class VyperRaster:
             vector = None
         self.intersects = intersecting_regions
 
-    def run_pipeline(self, yy, zz, incrs, region_name):
+    def run_pipeline(self, xx, yy, zz, incrs, region_name):
         """
         MLLW to NAVD88
         """
@@ -203,7 +209,7 @@ class VyperRaster:
         for region in self.intersects:
             start = datetime.now()
             try:
-                result, new_crs = run_pipeline(xx.flatten(), yy.flatten(), zz.flatten(), self.input_crs, region)
+                result, new_crs = self.run_pipeline(xx.flatten(), yy.flatten(), zz.flatten(), self.input_crs, region)
             except pyproj.ProjError as e:
                 print_paths = '\n'.join(pyproj.datadir.get_data_dir().split(';'))
                 self.config.logger.error('Proj pipeline failed. pyproj paths: \n{}'.format(print_paths))
@@ -234,7 +240,7 @@ class VyperRaster:
             missing_idx = np.where(np.isnan(sep) & (self.input_elevation != self.input_nodata))
             num_nan = len(missing_idx[0])
             if num_nan > 0:
-                missing, new_crs = run_pipeline(x[missing_idx], y[missing_idx], np.zeros(num_nan), self.input_crs, region)
+                missing, new_crs = self.run_pipeline(x[missing_idx], y[missing_idx], np.zeros(num_nan), self.input_crs, region)
                 missing_sep = missing[2]
                 still_inf_idx = np.where(np.isinf(missing_sep))
                 missing_sep[still_inf_idx] = np.nan
@@ -297,21 +303,22 @@ class VyperRaster:
         None.
 
         """
+        
         if self.intersects is None:
             self.get_interesecting_vdatum_regions()
         self.config.logger.debug(f'Begin work on {os.path.basename(self.input_file)}')
         if len(self.intersects) > 0:
             sep, crs = self.get_datum_sep(100)
-            apply_sep(sep, crs)
+            self.apply_sep(sep, crs)
         else:
-            self.config.logger.debug(f'no region found for {os.path.basename(datapath)}')
+            self.config.logger.debug(f'no region found for {self.input_file}')
 
     def config_logger(self):
         self.config.logger.setLevel(logging.DEBUG)
         log_formatter = logging.Formatter('[%(asctime)s] %(name)-9s %(levelname)-8s: %(message)s')
 
         log_name = f'_to_NAVD88_{datetime.now():%Y%m%d_%H%M%S}.log'
-        log_filename = os.path.join(outpath, log_name)
+        log_filename = os.path.join(os.path.dirname(self.output_path), log_name)
         log_file = logging.FileHandler(log_filename)
         log_file.setFormatter(log_formatter)
         log_file.setLevel(logging.DEBUG)
@@ -327,10 +334,17 @@ class VyperRaster:
             handler.close()
             self.config.logger.removeHandler(handler)
 
+    def close(self):
+        self.close_logger()
+
 
 class VyperConfig:
     """
     Contains all files and configuration information for VyperDatum
+
+    Saves as settings are changed to the appdata folder on your machine, something like:
+
+    C:\\Users\\eyou1\\AppData\\Roaming\\vyperdatum\\vyperdatum.config
     """
 
     def __init__(self):
@@ -480,7 +494,7 @@ def get_gtx_grid_list(vdatum_directory: str, logger: logging.Logger = None):
         if logger is None:
             print(errmsg)
         else:
-            self.logger.warning(errmsg)
+            logger.warning(errmsg)
     grids = {}
     for gtx in gtx_list:
         gtx_path, gtx_file = os.path.split(gtx)
@@ -515,7 +529,7 @@ def get_vdatum_region_polygons(vdatum_directory: str, logger: logging.Logger = N
         if logger is None:
             print(errmsg)
         else:
-            self.logger.warning(errmsg)
+            logger.warning(errmsg)
     geom = {}
     for kml in kml_list:
         kml_path, kml_file = os.path.split(kml)
@@ -598,12 +612,62 @@ def write_gdal_geotiff(outfile, data, pyproj_crs, transform, nodata, band_names)
 
 
 if __name__ == '__main__':
-    pass
-    # set_logger(outpath)
-    # update_vdatum_data_directory()
-    # check_gdal_version()
-    # flist = glob.glob(os.path.join(inpath, '*.tiff'))
-    # for datapath in flist:
-    #     outfilepath = os.path.join(outpath, os.path.basename(datapath))
-    #     transform_raster(datapath, outfilepath)
-    # clear_logger()
+    parser = argparse.ArgumentParser(description='VyperRaster - Transform Rasters from one vertical datum to another')
+    parser.add_argument('-i', '--input_data', type=str, help='either a directory of rasters or a single raster, expect files in tiff format')
+    parser.add_argument('-o', '--output_path', type=str, help='either an output directory or file (for single raster conversion), transformed raster(s) as geotiff')
+    parser.add_argument('-vd', '--vdatum', nargs='?', type=str, help='vdatum folder path, should only have to provide this once (saved in config file)')
+
+    args = parser.parse_args()
+
+    # set the vdatum directory if provided in the args
+    vyp = VyperRaster()
+    if args.vdatum:
+        print('setting a new vdatum directory: {}'.format(args.vdatum))
+        vyp.config.settings['vdatum_directory'] = args.vdatum
+
+    # check for vdatum
+    if not vyp.config.grid_files or not vyp.config.polygon_files:
+        raise ValueError('Unable to find vdatum files using {}, try providing a new vdatum directory using -vd argument'.format(vyp.config.settings['vdatum_directory']))
+
+    # run the transform(s), this could probably be cleaned up, but we basically cover every combination of directory/file path provided
+    err = False
+    infil, outfil = args.input_data, args.output_path
+    if os.path.isdir(infil):
+        flist = glob.glob(os.path.join(infil, '*.tiff'))
+        if os.path.isdir(outfil):
+            for datapath in flist:
+                root, fname = os.path.split(datapath)
+                outputfile = os.path.join(outfil, fname)
+                if os.path.exists(outputfile):
+                    outputfile = os.path.splitext(outputfile)[0] + '_{}.tiff'.format(datetime.now().strftime('%Y%m%d_%H%M%S'))
+                vyp = VyperRaster(datapath, outputfile)
+                vyp.transform_raster()
+                vyp.close()
+        elif os.path.isfile(outfil):
+            for datapath in flist:
+                if os.path.exists(outfil):
+                    outfil = os.path.splitext(outfil)[0] + '_{}.tiff'.format(datetime.now().strftime('%Y%m%d_%H%M%S'))
+                vyp = VyperRaster(datapath, outfil)
+                vyp.transform_raster()
+                vyp.close()
+        else:
+            err = True
+    elif os.path.isfile(infil):
+        if os.path.isdir(outfil):
+            root, fname = os.path.split(infil)
+            outputfile = os.path.join(outfil, fname)
+            if os.path.exists(outputfile):
+                outputfile = os.path.splitext(outputfile)[0] + '_{}.tiff'.format(datetime.now().strftime('%Y%m%d_%H%M%S'))
+        elif os.path.isfile(outfil):
+            if os.path.exists(outfil):
+                outfil = os.path.splitext(outfil)[0] + '_{}.tiff'.format(datetime.now().strftime('%Y%m%d_%H%M%S'))
+        else:
+            err = True
+        vyp = VyperRaster(infil, outfil)
+        vyp.transform_raster()
+        vyp.close()
+    else:
+        err = True
+
+    if err:
+        raise ValueError('Invalid arguments, ensure both are valid file or directory paths: input_data {}, output_data {}'.format(infil, outfil))
