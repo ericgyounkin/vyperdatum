@@ -34,7 +34,10 @@ class VyperRaster:
         """
 
         self.config = VyperConfig()
-
+        self.input_file = ''
+        self.input_path = ''
+        self.output_path = ''
+        
         if input_file is None:
             self.input_file = self.config.settings['inpath']
         else:
@@ -43,7 +46,8 @@ class VyperRaster:
         if output_path is None:
             self.output_path = self.config.settings['outpath']
             if self.output_path == '':
-                self.output_path = os.path.join(os.path.split(self.input_file)[0], os.path.splitext(self.input_file)[0] + '_converted.tiff')
+                if self.input_path:
+                    self.output_path = os.path.join(os.path.split(self.input_file)[0], os.path.splitext(self.input_file)[0] + '_converted.tiff')
                 self.config.settings['outpath'] = self.output_path
         else:
             self.config.settings['outpath'] = output_path
@@ -62,28 +66,30 @@ class VyperRaster:
         self.input_band_names = None
 
         self._validate_inputs()
+        self.config_logger()
 
     def _validate_inputs(self):
         """
         Ensure the input file exists and the output file directory also exists
         """
 
-        if not os.path.exists(self.input_file):
+        if not os.path.exists(self.input_file) and self.input_file:
             raise ValueError('VyperDatum: {} does not exist'.format(self.input_file))
         basedir, output_name = os.path.split(self.output_path)
-        if not os.path.exists(basedir):
+        if not os.path.exists(basedir) and self.output_path:
             raise ValueError('VyperDatum: base folder for {} does not exist: {}'.format(self.output_path, basedir))
 
-        with rasterio.open(self.input_file) as raster:
-            self.input_elevation, self.input_uncertainty, self.input_contributor = raster.read()
-            self.input_transform = raster.transform
-            self.input_crs = raster.crs
-            self.input_nodata = raster.nodata
-            self.input_profile = raster.profile
-            self.input_band_names = raster.descriptions
-            expected_bandnames = ('Elevation', 'Uncertainty', 'Contributor')
-            if self.input_band_names != expected_bandnames:
-                raise ValueError('VyperRaster: Expected {} band names, found {}'.format(expected_bandnames, self.input_band_names))
+        if self.input_file:
+            with rasterio.open(self.input_file) as raster:
+                self.input_elevation, self.input_uncertainty, self.input_contributor = raster.read()
+                self.input_transform = raster.transform
+                self.input_crs = raster.crs
+                self.input_nodata = raster.nodata
+                self.input_profile = raster.profile
+                self.input_band_names = raster.descriptions
+                expected_bandnames = ('Elevation', 'Uncertainty', 'Contributor')
+                if self.input_band_names != expected_bandnames:
+                    raise ValueError('VyperRaster: Expected {} band names, found {}'.format(expected_bandnames, self.input_band_names))
 
     def get_interesecting_vdatum_regions(self):
         """
@@ -318,13 +324,14 @@ class VyperRaster:
     def config_logger(self):
         self.config.logger.setLevel(logging.DEBUG)
         log_formatter = logging.Formatter('[%(asctime)s] %(name)-9s %(levelname)-8s: %(message)s')
-
-        log_name = f'_to_NAVD88_{datetime.now():%Y%m%d_%H%M%S}.log'
-        log_filename = os.path.join(os.path.dirname(self.output_path), log_name)
-        log_file = logging.FileHandler(log_filename)
-        log_file.setFormatter(log_formatter)
-        log_file.setLevel(logging.DEBUG)
-        self.config.logger.addHandler(log_file)
+        
+        if self.output_path:
+            log_name = f'_to_NAVD88_{datetime.now():%Y%m%d_%H%M%S}.log'
+            log_filename = os.path.join(os.path.dirname(self.output_path), log_name)
+            log_file = logging.FileHandler(log_filename)
+            log_file.setFormatter(log_formatter)
+            log_file.setLevel(logging.DEBUG)
+            self.config.logger.addHandler(log_file)
 
         output_console = logging.StreamHandler(sys.stdout)
         output_console.setFormatter(log_formatter)
@@ -384,19 +391,20 @@ class VyperConfig:
                 print('generating appdata folder: {}'.format(vyperdatum_folder))
                 os.makedirs(vyperdatum_folder)
             print('writing a new appdata config file: {}'.format(vyperdatum_file))
-            self.settings_object, settings = create_new_config_file(vyperdatum_file)
+            self.settings_object, settings = create_new_config_file(vyperdatum_file, self.default_settings)
 
         # populate our settings with the new/existing settings found
         if settings is not None:
             for ky, val in settings.items():
                 self.settings[ky] = val
+                
 
     def _init_logger(self):
         """
         Build the logger instance
         """
 
-        if 'logger_name' in self.settings:
+        if 'logger_name' in self.settings and self.settings['logger_name'] != '':
             self.logger = logging.getLogger(self.settings['logger_name'])
         else:
             self.logger = logging.getLogger('vyperdatum')
@@ -611,9 +619,8 @@ def write_gdal_geotiff(outfile, data, pyproj_crs, transform, nodata, band_names)
     #                        'TIFFTAG_COPYRIGHT': TIFFTAG_COPYRIGHT,
     #                        })
     outband.FlushCache()
-
-
-if __name__ == '__main__':
+    
+def main():
     parser = argparse.ArgumentParser(description='VyperRaster - Transform Rasters from one vertical datum to another')
     parser.add_argument('-i', '--input_data', type=str, help='either a directory of rasters or a single raster, expect files in tiff format')
     parser.add_argument('-o', '--output_path', type=str, help='either an output directory or file (for single raster conversion), transformed raster(s) as geotiff')
@@ -629,11 +636,16 @@ if __name__ == '__main__':
 
     # check for vdatum
     if not vyp.config.grid_files or not vyp.config.polygon_files:
-        raise ValueError('Unable to find vdatum files using {}, try providing a new vdatum directory using -vd argument'.format(vyp.config.settings['vdatum_directory']))
-
+        print('Unable to find vdatum files using {}, try providing a new vdatum directory using -vd argument'.format(vyp.config.settings['vdatum_directory'])) 
+        return
+    
     # run the transform(s), this could probably be cleaned up, but we basically cover every combination of directory/file path provided
     err = False
+
     infil, outfil = args.input_data, args.output_path
+    if not infil or not outfil:
+        print('No infile or outfile provided')
+        return
     if os.path.isdir(infil):
         flist = glob.glob(os.path.join(infil, '*.tiff'))
         if os.path.isdir(outfil):
@@ -673,3 +685,6 @@ if __name__ == '__main__':
 
     if err:
         raise ValueError('Invalid arguments, ensure both are valid file or directory paths: input_data {}, output_data {}'.format(infil, outfil))
+
+if __name__ == '__main__':
+    main()
