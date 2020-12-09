@@ -13,6 +13,8 @@ import rasterio
 import collections
 gdal.UseExceptions()
 
+LOGGER = logging.getLogger('vyperdatum')
+
 
 class VyperRaster:
     """
