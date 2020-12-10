@@ -13,8 +13,6 @@ import rasterio
 import collections
 gdal.UseExceptions()
 
-LOGGER = logging.getLogger('vyperdatum')
-
 
 class VyperRaster:
     """
@@ -644,44 +642,36 @@ def main():
 
     infil, outfil = args.input_data, args.output_path
     if not infil or not outfil:
-        print('No infile or outfile provided')
-        return
-    if os.path.isdir(infil):
+        print('No infile or outfile provided.')
+    
+    # convert infil into a list of paths for processing
+    if infil is None or os.path.isfile(infil):
+        flist = [infil]
+    elif os.path.isdir(infil):
         flist = glob.glob(os.path.join(infil, '*.tiff'))
-        if os.path.isdir(outfil):
-            for datapath in flist:
-                root, fname = os.path.split(datapath)
-                outputfile = os.path.join(outfil, fname)
-                if os.path.exists(outputfile):
-                    outputfile = os.path.splitext(outputfile)[0] + '_{}.tiff'.format(datetime.now().strftime('%Y%m%d_%H%M%S'))
-                vyp = VyperRaster(datapath, outputfile)
-                vyp.transform_raster()
-                vyp.close()
-        elif os.path.isfile(outfil):
-            for datapath in flist:
-                if os.path.exists(outfil):
-                    outfil = os.path.splitext(outfil)[0] + '_{}.tiff'.format(datetime.now().strftime('%Y%m%d_%H%M%S'))
-                vyp = VyperRaster(datapath, outfil)
-                vyp.transform_raster()
-                vyp.close()
-        else:
-            err = True
-    elif os.path.isfile(infil):
-        if os.path.isdir(outfil):
-            root, fname = os.path.split(infil)
-            outputfile = os.path.join(outfil, fname)
-            if os.path.exists(outputfile):
-                outputfile = os.path.splitext(outputfile)[0] + '_{}.tiff'.format(datetime.now().strftime('%Y%m%d_%H%M%S'))
-        elif os.path.isfile(outfil):
-            if os.path.exists(outfil):
-                outfil = os.path.splitext(outfil)[0] + '_{}.tiff'.format(datetime.now().strftime('%Y%m%d_%H%M%S'))
-        else:
-            err = True
-        vyp = VyperRaster(infil, outfil)
-        vyp.transform_raster()
-        vyp.close()
     else:
         err = True
+    
+    # determine if the output path provided is a file or a directory
+    if outfil is None or os.path.isfile(outfil):
+        fileout = True
+    elif os.path.isdir(outfil):
+        fileout = False
+    else:
+        err = True
+        
+    # go to work
+    for datapath in flist:
+        if fileout:
+            outputfile = outfil
+        else:
+            root, fname = os.path.split(datapath)
+            outputfile = os.path.join(outfil, fname)
+        if outputfile is not None and os.path.exists(outputfile):
+            outputfile = os.path.splitext(outputfile)[0] + '_{}.tiff'.format(datetime.now().strftime('%Y%m%d_%H%M%S'))
+        vyp = VyperRaster(datapath, outputfile)
+        vyp.transform_raster()
+        vyp.close()
 
     if err:
         raise ValueError('Invalid arguments, ensure both are valid file or directory paths: input_data {}, output_data {}'.format(infil, outfil))
