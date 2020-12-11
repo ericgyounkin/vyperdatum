@@ -191,13 +191,8 @@ class VyperRaster:
         if self.intersects is None:
             self.get_interesecting_vdatum_regions()
         new_crs = None
-        # with rasterio.open(self.input_file) as raster:
-        #     elev = raster.read(1)
-        #     transform = raster.transform
-        #     crs = raster.crs
-        #     nodata = raster.nodata
-        #     profile = raster.profile
-        # get sparse raster x and y positions
+        
+        # create empty sampled array representing original raster
         sy, sx = self.input_profile['height'], self.input_profile['width']
         resy, resx = self.input_transform[4], self.input_transform[0]
         y0, x0 = self.input_transform[5], self.input_transform[2]
@@ -209,11 +204,14 @@ class VyperRaster:
         y_sampled = np.linspace(y0, y1, ny)
         yy, xx = np.meshgrid(y_sampled, x_sampled, indexing='ij')
         zz = np.zeros(yy.shape)
+        # raster to points with points at corners rather than cell centers
         y, x = np.mgrid[y0:y1:resy, x0:x1:resx]
+        # make empty separation raster
         sep = np.full(y.shape, np.nan)
 
         for region in self.intersects:
             start = datetime.now()
+            # first convert sampled raster
             try:
                 result, new_crs = self.run_pipeline(xx.flatten(), yy.flatten(), zz.flatten(), self.input_crs, region)
             except pyproj.ProjError as e:
@@ -229,7 +227,7 @@ class VyperRaster:
                 self.config.logger.debug(
                     'No valid points found from gridding in {region}. Putting all points through proj pipeline directly.')
             else:
-                self.config.logger.debug('interpolating to original grid for {region}')
+                self.config.logger.debug(f'interpolating to original grid for {region}')
                 start = datetime.now()
                 points = np.array([result[1][valid_idx], result[0][valid_idx]]).T
                 valid_vals = vals[valid_idx]
@@ -243,10 +241,13 @@ class VyperRaster:
                     return None, None
                 dt = datetime.now() - start
                 self.config.logger.debug(f'Interpolating {len(y.flatten())} points took {dt} seconds for {region}')
+            # find all points where a separation is desired but not yet found.
             missing_idx = np.where(np.isnan(sep) & (self.input_elevation != self.input_nodata))
-            num_nan = len(missing_idx[0])
-            if num_nan > 0:
-                missing, new_crs = self.run_pipeline(x[missing_idx], y[missing_idx], np.zeros(num_nan), self.input_crs, region)
+            num_remaining = len(missing_idx[0])
+            # attempt to transform the remaining points directly
+            if num_remaining > 0:
+                self.config.logger.debug(f'Transforming {num_remaining} remaining points not found in interpolated region for {region}.')
+                missing, new_crs = self.run_pipeline(x[missing_idx], y[missing_idx], np.zeros(num_remaining), self.input_crs, region)
                 missing_sep = missing[2]
                 still_inf_idx = np.where(np.isinf(missing_sep))
                 missing_sep[still_inf_idx] = np.nan
