@@ -12,7 +12,9 @@ import rasterio
 gdal.UseExceptions()
 
 
-CONFIGURATION_FILENAME = 'vyperdatum.config'
+p2Here = os.path.abspath(os.path.dirname(__file__))
+
+CONFIGURATION_FILENAME = os.path.join(p2Here, 'vyperdatum.config')
 if not os.path.isfile(CONFIGURATION_FILENAME):
     raise ValueError(f'file not found: {CONFIGURATION_FILENAME}')
 config = {}
@@ -39,7 +41,6 @@ if 'outpath' in config:
 if 'vdatum_directory' in config:
     VDATUM_DIRECTORY = config['vdatum_directory']
     VDATUM_DIRECTORY = fr'{VDATUM_DIRECTORY}'
-
 
 def check_gdal_version():
     """
