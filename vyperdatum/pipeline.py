@@ -41,38 +41,41 @@ UTM_zone = {'ALFLgom': 16,
             'WApugets': 10}
 
 
-def get_pipeline(from_datum, to_datum, region_name):
+def get_pipeline(from_datum, to_datum, region_name, input_utm=True, output_utm=True):
 
     region = re.match(r'^(\D+).*', region_name).group(1)
-    zone = UTM_zone.get(region)
-    if not isinstance(zone, int):
-        msg = f'Failed to get UTM zone for region name {region_name}'
-        LOGGER.error(msg)
-        raise ValueError(msg)
+    if input_utm or output_utm:
+        zone = UTM_zone.get(region)
+        if not isinstance(zone, int):
+            msg = f'Failed to get UTM zone for region name {region_name}'
+            LOGGER.error(msg)
+            raise ValueError(msg)
 
-    pipeline_dict = {'NAVD88_MLLW': f'proj=pipeline step inv proj=utm zone={zone} \
-                                      step proj=vgridshift grids={region_name}\\mllw.gtx \
-                                      step inv proj=vgridshift grids={region_name}\\tss.gtx step proj=utm zone={zone}',
+    utm = ''
+    if output_utm:
+        utm = f'step proj=utm zone={zone}'
+    inv_utm = ''
+    if input_utm:
+        inv_utm = f'step inv proj=utm zone={zone}'
+    mllw = f'step proj=vgridshift grids={region_name}\\mllw.gtx'
+    inv_mllw = f'step inv proj=vgridshift grids={region_name}\\mllw.gtx'
+    tss = f'step proj=vgridshift grids={region_name}\\tss.gtx'
+    inv_tss = f'step inv proj=vgridshift grids={region_name}\\tss.gtx'
+    geoid12b = f'step proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx'
+    inv_geoid12b = f'step inv proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx'
 
-                     'MLLW_NAVD88': f'proj=pipeline step inv proj=utm zone={zone} \
-                                      step inv proj=vgridshift grids={region_name}\\mllw.gtx \
-                                      step proj=vgridshift grids={region_name}\\tss.gtx step proj=utm zone={zone}',
 
-                     'MLLW_NAD83': f'proj=pipeline step inv proj=utm zone={zone} \
-                                     step inv proj=vgridshift grids={region_name}\\mllw.gtx \
-                                     step proj=vgridshift grids={region_name}\\tss.gtx \
-                                     step inv proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx step proj=utm zone={zone}',
+    pipeline_dict = {'NAVD88_MLLW':  f'proj=pipeline {inv_utm} {mllw} {inv_tss} {utm}',
 
-                     'NAD83_MLLW': f'proj=pipeline step inv proj=utm zone={zone} \
-                                     step proj=vgridshift grids={region_name}\\mllw.gtx \
-                                     step inv proj=vgridshift grids={region_name}\\tss.gtx \
-                                     step proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx step proj=utm zone={zone}',
+                     'MLLW_NAVD88':  f'proj=pipeline {inv_utm} {inv_mllw} {tss} {utm}',
 
-                     'NAD83_NAVD88': f'proj=pipeline step inv proj=utm zone={zone} \
-                                     step proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx step proj=utm zone={zone}',
+                     'MLLW_NAD83':   f'proj=pipeline {inv_utm} {inv_mllw} {tss} {inv_geoid12b} {utm}',
 
-                     'NAVD88_NAD83': f'proj=pipeline step inv proj=utm zone={zone} \
-                                     step inv proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx step proj=utm zone={zone}'}
+                     'NAD83_MLLW':   f'proj=pipeline {inv_utm} {mllw} {inv_tss} {geoid12b} {utm}',
+
+                     'NAD83_NAVD88': f'proj=pipeline {inv_utm} {geoid12b} {utm}',
+
+                     'NAVD88_NAD83': f'proj=pipeline {inv_utm} {inv_geoid12b} {utm}'}
 
 
     try:
