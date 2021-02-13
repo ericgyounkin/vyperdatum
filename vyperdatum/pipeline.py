@@ -64,23 +64,21 @@ def get_pipeline(from_datum, to_datum, region_name, input_utm=True, output_utm=T
     geoid12b = f'step proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx'
     inv_geoid12b = f'step inv proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx'
 
+    transform = f'{from_datum.upper()}_{to_datum.upper()}'
 
-    pipeline_dict = {'NAVD88_MLLW':  f'proj=pipeline {inv_utm} {mllw} {inv_tss} {utm}',
-
-                     'MLLW_NAVD88':  f'proj=pipeline {inv_utm} {inv_mllw} {tss} {utm}',
-
-                     'MLLW_NAD83':   f'proj=pipeline {inv_utm} {inv_mllw} {tss} {inv_geoid12b} {utm}',
-
-                     'NAD83_MLLW':   f'proj=pipeline {inv_utm} {mllw} {inv_tss} {geoid12b} {utm}',
-
-                     'NAD83_NAVD88': f'proj=pipeline {inv_utm} {geoid12b} {utm}',
-
-                     'NAVD88_NAD83': f'proj=pipeline {inv_utm} {inv_geoid12b} {utm}'}
-
-
-    try:
-        pipeline = pipeline_dict[f'{from_datum.upper()}_{to_datum.upper()}']
-    except:
+    if transform == 'NAVD88_MLLW':
+        pipeline = f'proj=pipeline {inv_utm} {mllw} {inv_tss} {utm}'
+    elif transform == 'MLLW_NAVD88':
+        pipeline = f'proj=pipeline {inv_utm} {inv_mllw} {tss} {utm}'
+    elif transform == 'MLLW_NAD83':
+        pipeline = f'proj=pipeline {inv_utm} {inv_mllw} {tss} {inv_geoid12b} {utm}'
+    elif transform == 'NAD83_MLLW':
+        pipeline = f'proj=pipeline {inv_utm} {mllw} {inv_tss} {geoid12b} {utm}'
+    elif transform == 'NAD83_NAVD88':
+        pipeline = f'proj=pipeline {inv_utm} {geoid12b} {utm}'
+    elif transform == 'NAVD88_NAD83':
+        pipeline = f'proj=pipeline {inv_utm} {inv_geoid12b} {utm}'
+    else:
         msg = f'Failed to get pipeline from {from_datum} to {to_datum}'
         LOGGER.error(msg)
         raise ValueError(msg)
