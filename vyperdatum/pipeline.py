@@ -1,4 +1,5 @@
 import re
+
 from raster.vyperdatum_raster import LOGGER
 
 
@@ -22,7 +23,7 @@ UTM_zone = {'ALFLgom': 16,
             'LAmobile': (16, 15),
             'LATXwest': 15,
             'MDVAchb': 18,
-            'MENHMAgome': 19,
+            'MENHMAgome': (20, 19),
             'NCcoast': (18, 17),
             'NCinner': (18, 17),
             'NJcstemb': 18,
@@ -41,13 +42,11 @@ UTM_zone = {'ALFLgom': 16,
             'WApugets': 10}
 
 
-def get_pipeline(from_datum, to_datum, region_name, input_utm=True, output_utm=True):
+def get_pipeline(from_datum, to_datum, region_name, zone=None, input_utm=True, output_utm=True):
 
-    region = re.match(r'^(\D+).*', region_name).group(1)
     if input_utm or output_utm:
-        zone = UTM_zone.get(region)
-        if not isinstance(zone, int):
-            msg = f'Failed to get UTM zone for region name {region_name}'
+        if zone is None or not isinstance(zone, int):
+            msg = f'Need UTM zone number for UTM <-> lon/lat conversion'
             LOGGER.error(msg)
             raise ValueError(msg)
 
