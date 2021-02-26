@@ -21,8 +21,6 @@ import rasterio
 import collections
 gdal.UseExceptions()
 
-Regions = list[str]
-Bounds = list[str]
 
 class VyperCore:
     """
@@ -31,7 +29,7 @@ class VyperCore:
     The pipeline to use for transformations and the applicable region(s) must
     be set.  The region(s) can be set directly or through providing bounds.
     """
-    def __init__(self, pipeline: str, bounds: Bounds = [], regions: Regions = []) -> bool:
+    def __init__(self, pipeline: str, bounds: [str] = [], regions: [str] = []) -> bool:
         """
         Optionally provide the required information for datum transformation
         prepartion.
@@ -163,54 +161,97 @@ class VyperCore:
         """
         return []
     
-class VdatumConfig:
+class VdatumData:
     """
-    Contains the path information for using VDatum information with Vyperdatum.
+    Gets and maintains VDatum information for use with Vyperdatum.
+    
+    The VDatum path location is stored in a config file which is in the user's 
+    directory.
     """
 
     def __init__(self):
+        # form the default config path
         vyperdatum_folder = os.path.join(os.path.expanduser('~'), 'vyperdatum')
         vdatum_path_file = os.path.join(vyperdatum_folder, 'vdatum.config')
         self.vdatum_path_file = vdatum_path_file
-        
+        # get the config
         if os.path.exists(vdatum_path_file):
-            self.settings_object, settings = read_from_config_file(vdatum_path_file)
+            self.config = _read_from_config_file(vdatum_path_file)
         else:
             if not os.path.exists(vyperdatum_folder):
                 os.makedirs(vyperdatum_folder)
-            print(f'creating a default config file: {vyperdatum_file}')
+            print(f'creating a default config file: {vdatum_path_file}')
             default_vdatum_path = os.path.join(os.path.splitdrive(sys.executable)[0],'/VDatum')
-            self.settings_object, settings = create_new_config_file(vyperdatum_file, {'vdatum_directory': r'default_vdatum_path'})
+            self.config = _create_new_config_file(vdatum_path_file, {'vdatum_path': default_vdatum_path})
         
+    def set_vdatum_path(self, vdatum_path: str):
         
-        self._load_settings()
-
-
+        self.config = _create_new_config_file(self.vdatum_path_file, {'vdatum_path': vdatum_path})
         
 
-    def _load_settings(self):
+    def _read_from_config_file(self, filepath: str):
         """
-        Call on initializing the class, will find an existing config file or create a new one if it does not exist
-        Will then populate the settings attribute with existing settings or the default settings we wrote to the
-        new config file.
+        Read from the generated configparser file path, set the object vdatum 
+        settings.
+    
+        Parameters
+        ----------
+        filepath
+            absolute filepath to the configparser object
+    
+        Returns
+        -------
+        None
         """
-        # test if VDatum path is valid, raise an error if not.
-        # populate our settings with the new/existing settings found
-        if settings is not None:
-            for ky, val in settings.items():
-                self.settings[ky] = val
-
+    
+        settings = {}
+        config_file = configparser.ConfigParser()
+        config_file.read(filepath)
+        sections = config_file.sections()
+        for section in sections:
+            config_file_section = config_file[section]
+            for key in config_file_section:
+                settings[key] = config_file_section[key]
+        return settings
+    
+    
+    def _create_new_config_file(self, filepath: str, new_settings: dict) -> dict:
+        """
+        Create a new configparser file, return the settings and the configparser object
+    
+        Parameters
+        ----------
+        filepath
+            absolute filepath to the configparser object you wish to create
+        default_settings
+            new settings we want to write to the configparser file
+    
+        Returns
+        -------
+        configparser.ConfigParser
+            configparser object used to read the file
+        dict
+            settings within the file
+        """
+    
+        config = configparser.ConfigParser()
+        config['Default'] = new_settings
+        with open(filepath, 'w') as configfile:
+            config.write(configfile)
+        return new_settings    
+    
+    
     def _set_vdatum_directory(self, value):
         """
         Called when self.settings['vdatum_directory'] is updated.  We find all the grids and polygons in the vdatum
         directory and save the dicts to the attributes in this class.
         """
-
+    
         # special case for vdatum directory, we want to give pyproj the new path if it isn't there already
         orig_proj_paths = pyproj.datadir.get_data_dir()
         if value not in orig_proj_paths:
             pyproj.datadir.append_data_dir(value)
-
+    
         # also want to populate grids and polygons with what we find
         newgrids = get_gtx_grid_list(value)
         for gname, gpath in newgrids.items():
@@ -218,8 +259,39 @@ class VdatumConfig:
         newpolys = get_vdatum_region_polygons(value)
         for pname, ppath in newpolys.items():
             self.polygon_files[pname] = ppath
-
     
+    
+    def _get_vdatum_region_polygons(self, vdatum_directory: str):
+        """"
+        Search the vdatum directory to find all kml files
+    
+        Parameters
+        ----------
+        vdatum_directory
+            absolute folder path to the vdatum directory
+        logger
+            Logger instance if you wish to include it
+    
+        Returns
+        -------
+        dict
+            dictionary of {kml name: kml path, ...}
+        """
+    
+        search_path = os.path.join(vdatum_directory, '*/*.kml')
+        kml_list = glob.glob(search_path)
+        if len(kml_list) == 0:
+            errmsg = f'No kml files found in the provided VDatum directory: {vdatum_directory}'
+            print(errmsg)
+        geom = {}
+        for kml in kml_list:
+            kml_path, kml_file = os.path.split(kml)
+            root_dir, kml_name = os.path.split(kml_path)
+            geom[kml_name] = kml
+        return geom
+
+
+
     
     
     
@@ -696,88 +768,7 @@ def get_gtx_grid_list(vdatum_directory: str):
     return grids
 
 
-def get_vdatum_region_polygons(vdatum_directory: str):
-    """"
-    Search the vdatum directory to find all kml files
 
-    Parameters
-    ----------
-    vdatum_directory
-        absolute folder path to the vdatum directory
-    logger
-        Logger instance if you wish to include it
-
-    Returns
-    -------
-    dict
-        dictionary of {kml name: kml path, ...}
-    """
-
-    search_path = os.path.join(vdatum_directory, '*/*.kml')
-    kml_list = glob.glob(search_path)
-    if len(kml_list) == 0:
-        errmsg = f'No kml files found in the provided VDatum directory: {vdatum_directory}'
-        print(errmsg)
-    geom = {}
-    for kml in kml_list:
-        kml_path, kml_file = os.path.split(kml)
-        root_dir, kml_name = os.path.split(kml_path)
-        geom[kml_name] = kml
-    return geom
-
-
-def read_from_config_file(filepath: str):
-    """
-    Read from the generated configparser file path, return the settings and the configparser object
-
-    Parameters
-    ----------
-    filepath
-        absolute filepath to the configparser object
-
-    Returns
-    -------
-    configparser.ConfigParser
-        configparser object used to read the file
-    dict
-        settings within the file
-    """
-
-    settings = {}
-    config_file = configparser.ConfigParser()
-    config_file.read(filepath)
-    sections = config_file.sections()
-    for section in sections:
-        config_file_section = config_file[section]
-        for key in config_file_section:
-            settings[key] = config_file_section[key]
-    return config_file, settings
-
-
-def create_new_config_file(filepath: str, default_settings: dict):
-    """
-    Create a new configparser file, return the settings and the configparser object
-
-    Parameters
-    ----------
-    filepath
-        absolute filepath to the configparser object you wish to create
-    default_settings
-        new settings we want to write to the configparser file
-
-    Returns
-    -------
-    configparser.ConfigParser
-        configparser object used to read the file
-    dict
-        settings within the file
-    """
-
-    config = configparser.ConfigParser()
-    config['Default'] = default_settings
-    with open(filepath, 'w') as configfile:
-        config.write(configfile)
-    return config, default_settings
 
 
 def get_gdal_version():
