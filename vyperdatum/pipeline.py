@@ -7,7 +7,7 @@ The pipelines are currently stored as a dictionary, but a lightweight database
 likely makes more sense so that specific datum and epochs (and versions?) can
 be queried.
 
-We need a WKT to lookup generator, unless the WKT contains the information to
+TODO: We need a WKT to lookup generator, unless the WKT contains the information to
 specify specific tranformation layers.
 
 The basic steps outlined here are:
@@ -31,11 +31,10 @@ datum_definition = {
     }
 
 
-def get_regional_vertical_pipelines(from_datum: str, to_datum: str, region_names: [str]) -> [str]:
+def get_regional_pipeline(from_datum: str, to_datum: str, region_name: str) -> [str]:
     """
     Return a string describing the pipeline to use to convert between the
-    provided datums. A placeholder for the regions is returned within the
-    string as {region_name}.
+    provided datums.
 
     Parameters
     ----------
@@ -43,8 +42,8 @@ def get_regional_vertical_pipelines(from_datum: str, to_datum: str, region_names
         A string corresponding to one of the stored datums.
     to_datum : str
         A string corresponding to one of the stored datums.
-    region_names: [str]
-        A list of region names corrisponding to VDatum subfolder names.
+    region_name: str
+        A region name corrisponding to a VDatum subfolder name.
 
     Raises
     ------
@@ -54,10 +53,9 @@ def get_regional_vertical_pipelines(from_datum: str, to_datum: str, region_names
 
     Returns
     -------
-    regional_pipelines : [str]
+    regional_pipeline : str
         A string describing the pipeline to use to convert between the
-        provided datums. A placeholder for the regions is returned within the
-        string as {region_name}.
+        provided datums.
 
     """
 
@@ -68,10 +66,8 @@ def get_regional_vertical_pipelines(from_datum: str, to_datum: str, region_names
     reversed_input_def = inverse_datum_def(input_datum_def)
     transformation_def = ['proj=pipeline', *reversed_input_def, *output_datum_def]
     pipeline = ' step '.join(transformation_def)
-    regional_pipelines = []
-    for region_name in region_names:
-        regional_pipelines.append(pipeline.replace('{region_name}', region_name))
-    return regional_pipelines
+    regional_pipeline = pipeline.replace('{region_name}', region_name)
+    return regional_pipeline
 
 
 def _validate_datum_names(from_datum: str, to_datum: str):
