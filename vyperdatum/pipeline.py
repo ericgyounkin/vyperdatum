@@ -12,25 +12,25 @@ specify specific tranformation layers.
 
 The basic steps outlined here are:
     1) Find the datum definitions for the input and output datums.
-    2) Compare the definitions starting at the base (ellipsoid).  When the 
+    2) Compare the definitions starting at the base (ellipsoid).  When the
        definitions no long agree, stop.
     3) Reverse the remaining input datum layers and prepend 'inv' to each layer.
     4) String the input and output layers together.
 """
 
-# All datum definitions are defined relative to the same 'pivot' ellipsoid. 
+# All datum definitions are defined relative to the same 'pivot' ellipsoid.
 datum_definition = {
     'nad83'    : [],
     'geoid12b' : ['proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx'],
     'navd88'   : ['proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx'],
-    'tss'      : ['proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx', 
+    'tss'      : ['proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx',
                   'proj=vgridshift grids={region_name}\\tss.gtx'],
     'mllw'     : ['proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx',
                   'proj=vgridshift grids={region_name}\\tss.gtx',
                   'proj=vgridshift grids={region_name}\\mllw.gtx'],
     }
 
-    
+
 def get_regional_vertical_pipelines(from_datum: str, to_datum: str, region_names: [str]) -> [str]:
     """
     Return a string describing the pipeline to use to convert between the
@@ -101,8 +101,8 @@ def _validate_datum_names(from_datum: str, to_datum: str):
     if to_datum not in datum_definition:
         raise ValueError(f'Output datum {to_datum} not found in datum definitions.')
 
-    
-def compare_datums(in_datum_def: [str], out_datum_def: [str]) -> [[str],[str]]:
+
+def compare_datums(in_datum_def: [str], out_datum_def: [str]) -> [[str], [str]]:
     """
     Compare two lists describing the datums.  Remove common parts of the
     definition starting from the first entry.  Stop when they do not agree.
@@ -120,7 +120,7 @@ def compare_datums(in_datum_def: [str], out_datum_def: [str]) -> [[str],[str]]:
         A reduced list of the input datum and output datum layers.
 
     """
-    num_to_compare = min(len(in_datum_def),len(out_datum_def))
+    num_to_compare = min(len(in_datum_def), len(out_datum_def))
     for n in range(num_to_compare):
         if in_datum_def[n] == out_datum_def[n]:
             in_datum_def.pop(n)
