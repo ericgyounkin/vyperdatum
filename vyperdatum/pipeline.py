@@ -30,38 +30,8 @@ datum_definition = {
                   'proj=vgridshift grids={region_name}\\mllw.gtx'],
     }
 
-class pipeline:
-    """
-    A holder for the pipeline string.
-    """
-    def __init__(self, from_datum: str, to_datum: str):
-        _validate_datum_name(from_datum, to_datum)
-        self.from_datum = from_datum
-        self.to_datum = to_datum
-        self.pipeline_string = get_generic_vertical_pipeline(from_datum, to_datum)
-        
     
-    def insert_region_name(self, region_name:str) -> str:
-        """
-        Insert the provided region name into the proj pipeline string and return.
-        
-        Parameters
-        ----------
-        region_name: str
-            A string corresponding to one of the VDatum regions.
-        """
-        region_pipeline = self.pipeline_string.replace('{region_name}', region_name)
-        return region_pipeline
-
-
-def _validate_datum_name(from_datum: str, to_datum: str):
-    if from_datum not in datum_definition:
-        raise ValueError(f'Input datum {from_datum} not found in datum definitions.')
-    if to_datum not in datum_definition:
-        raise ValueError(f'Output datum {to_datum} not found in datum definitions.')
-    
-    
-def get_generic_vertical_pipeline(from_datum: str, to_datum: str):
+def get_regional_vertical_pipelines(from_datum: str, to_datum: str, region_names: [str]) -> [str]:
     """
     Return a string describing the pipeline to use to convert between the
     provided datums. A placeholder for the regions is returned within the
@@ -73,6 +43,8 @@ def get_generic_vertical_pipeline(from_datum: str, to_datum: str):
         A string corresponding to one of the stored datums.
     to_datum : str
         A string corresponding to one of the stored datums.
+    region_names: [str]
+        A list of region names corrisponding to VDatum subfolder names.
 
     Raises
     ------
@@ -82,22 +54,54 @@ def get_generic_vertical_pipeline(from_datum: str, to_datum: str):
 
     Returns
     -------
-    pipeline : str
+    regional_pipelines : [str]
         A string describing the pipeline to use to convert between the
         provided datums. A placeholder for the regions is returned within the
         string as {region_name}.
 
     """
 
-    _validate_datum_name(from_datum, to_datum)
+    _validate_datum_names(from_datum, to_datum)
     input_datum_def = datum_definition[from_datum]
     output_datum_def = datum_definition[to_datum]
     input_datum_def, output_datum_def = compare_datums(input_datum_def, output_datum_def)
     reversed_input_def = inverse_datum_def(input_datum_def)
     transformation_def = ['proj=pipeline', *reversed_input_def, *output_datum_def]
     pipeline = ' step '.join(transformation_def)
-    return pipeline
+    regional_pipelines = []
+    for region_name in region_names:
+        regional_pipelines.append(pipeline.replace('{region_name}', region_name))
+    return regional_pipelines
 
+
+def _validate_datum_names(from_datum: str, to_datum: str):
+    """
+    Raise an error if the provided datum names are not found in the datum
+    definition dictionary.
+
+    Parameters
+    ----------
+    from_datum : str
+        DESCRIPTION.
+    to_datum : str
+        DESCRIPTION.
+
+    Raises
+    ------
+    ValueError
+        DESCRIPTION.
+
+    Returns
+    -------
+    None.
+
+    """
+    if from_datum not in datum_definition:
+        raise ValueError(f'Input datum {from_datum} not found in datum definitions.')
+    if to_datum not in datum_definition:
+        raise ValueError(f'Output datum {to_datum} not found in datum definitions.')
+
+    
 def compare_datums(in_datum_def: [str], out_datum_def: [str]) -> [[str],[str]]:
     """
     Compare two lists describing the datums.  Remove common parts of the
