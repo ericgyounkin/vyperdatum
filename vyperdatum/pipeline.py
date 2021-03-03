@@ -7,8 +7,13 @@ The pipelines are currently stored as a dictionary, but a lightweight database
 likely makes more sense so that specific datum and epochs (and versions?) can
 be queried.
 
-TODO: We need a WKT to lookup generator, unless the WKT contains the information to
-specify specific tranformation layers.
+TODO: We need a WKT to datum definition lookup generator, unless the WKT 
+    contains the information to specify specific tranformation layers.
+
+TODO: Perhaps we should not specify a geoid file for a datum, but,
+    like the VDatum regions, find which ones intersect a specific dataset and
+    specify a heirarcy for which one to use.  Currently a specific file is
+    specified.
 
 The basic steps outlined here are:
     1) Find the datum definitions for the input and output datums.
