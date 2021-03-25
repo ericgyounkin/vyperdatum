@@ -33,6 +33,9 @@ datum_definition = {
     'mllw'     : ['proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx',
                   'proj=vgridshift grids={region_name}\\tss.gtx',
                   'proj=vgridshift grids={region_name}\\mllw.gtx'],
+    'mhw'     : ['proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx',
+                 'proj=vgridshift grids={region_name}\\tss.gtx',
+                 'proj=vgridshift grids={region_name}\\mhw.gtx']
     }
 
 
@@ -63,10 +66,14 @@ def get_regional_pipeline(from_datum: str, to_datum: str, region_name: str) -> [
         provided datums.
 
     """
+    from_datum = from_datum.lower()
+    to_datum = to_datum.lower()
+    if from_datum == to_datum:
+        return None
 
     _validate_datum_names(from_datum, to_datum)
-    input_datum_def = datum_definition[from_datum]
-    output_datum_def = datum_definition[to_datum]
+    input_datum_def = datum_definition[from_datum].copy()
+    output_datum_def = datum_definition[to_datum].copy()
     input_datum_def, output_datum_def = compare_datums(input_datum_def, output_datum_def)
     reversed_input_def = inverse_datum_def(input_datum_def)
     transformation_def = ['proj=pipeline', *reversed_input_def, *output_datum_def]
@@ -122,10 +129,13 @@ def compare_datums(in_datum_def: [str], out_datum_def: [str]) -> [[str], [str]]:
 
     """
     num_to_compare = min(len(in_datum_def), len(out_datum_def))
+    remove_these = []
     for n in range(num_to_compare):
         if in_datum_def[n] == out_datum_def[n]:
-            in_datum_def.pop(n)
-            out_datum_def.pop(n)
+            remove_these.append(in_datum_def[n])
+    for rmve in remove_these:
+        in_datum_def.remove(rmve)
+        out_datum_def.remove(rmve)
     return [in_datum_def, out_datum_def]
 
 

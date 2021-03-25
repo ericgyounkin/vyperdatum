@@ -19,24 +19,66 @@ Apply separation model to raster input
 Enforce logic about reprojecting rasters vs projecting / unprojecting
     return points for rasters that are being (un)projected?
 '''
+from time import perf_counter
 import os, datetime
 import numpy as np
 from scipy.interpolate import griddata
 import gdal
-gdal.UseExceptions()
-import core
 
-class VyperRaster:
+gdal.UseExceptions()
+
+from vyperdatum.core import VyperCore
+
+
+class VyperRaster(VyperCore):
     """
     Transform raster methods
     """
-    def __init__(self):
-        pass
-        # init with raster, file or GDAL object.
-        # init with output datum?
-        # setup core object
-        # wait to do anything further, but flag if object is ready to go
+    def __init__(self, input_file: str, output_datum: str, vdatum_directory: str = None):
+        super().__init__(output_datum, vdatum_directory)
+        self.input_file = input_file
+        self.geotransform = None
+        self.min_x = None
+        self.min_y = None
+        self.max_x = None
+        self.max_y = None
+        self.width = None
+        self.height = None
+        self.input_epsg = None
 
+        self.layers = []
+        self.layernames = []
+        self.nodatavalue = []
+
+        self.initialize()
+
+    def initialize(self, input_file: str = None):
+        if input_file:  # can re-initialize by passing in a new file here
+            self.input_file = input_file
+
+        ofile = gdal.Open(self.input_file)
+        if not ofile:
+            raise ValueError(f'Unable to open {self.input_file} with gdal')
+
+        is_epsg = ofile.GetSpatialRef().GetAttrValue("AUTHORITY", 0) == 'EPSG'
+        if is_epsg:
+            self.input_epsg = ofile.GetSpatialRef().GetAttrValue("AUTHORITY", 1)
+        else:
+            raise NotImplementedError('Expect the input tif to have an EPSG attribute in the SpatialReference WKT string')
+
+        self.layers = [ofile.GetRasterBand(i + 1).ReadAsArray() for i in range(ofile.RasterCount)]
+        self.nodatavalue = [ofile.GetRasterBand(i + 1).GetNoDataValue() for i in range(ofile.RasterCount)]
+        self.layernames = [ofile.GetRasterBand(i + 1).GetDescription() for i in range(ofile.RasterCount)]
+
+        self.geotransform = ofile.GetGeoTransform()
+        self.min_x = self.geotransform[0]
+        self.max_y = self.geotransform[3]
+        self.max_x = self.min_x + self.geotransform[1] * ofile.RasterXSize
+        self.min_y = self.max_y + self.geotransform[5] * ofile.RasterYSize
+        self.height = self.max_y - self.min_y
+        self.width = self.max_x - self.min_x
+        self.set_region_by_bounds(self.min_x, self.min_y, self.max_x, self.max_y)
+        ofile = None
 
     def get_datum_sep(self, sampling_distance):
         """
@@ -47,14 +89,14 @@ class VyperRaster:
         sep
 
         """
-        if self.intersects is None:
-            self.get_interesecting_vdatum_regions()
+        if self.regions is None:
+            raise ValueError('Initialization must have failed, re-initialize with a new gdal supported file')
         new_crs = None
         
         self._sample_array(sampling_distance)
 
-        for region in self.intersects:
-            start = datetime.now()
+        for region in self.regions:
+            start = perf_counter()
             # first convert sampled raster
             try:
                 result, new_crs = self.run_pipeline(xx.flatten(), yy.flatten(), zz.flatten(), self.input_crs, region)
@@ -62,8 +104,8 @@ class VyperRaster:
                 print_paths = '\n'.join(pyproj.datadir.get_data_dir().split(';'))
                 print(f'Proj pipeline failed. pyproj paths: \n{print_paths}')
                 raise e
-            dt = datetime.now() - start
-            print(f'Transforming {len(yy.flatten())} points took {dt} seconds for {region}')
+            end = perf_counter()
+            print(f'Transforming {len(yy.flatten())} points took {end - start} seconds for {region}')
             vals = result[2].flatten()
             valid_idx = np.squeeze(np.argwhere(~np.isinf(vals)))
 
@@ -100,9 +142,9 @@ class VyperRaster:
     def _sample_array(self, transform_sampling_distance):
         """Sample the raster to get a subset of points and then interpolate"""
         # create empty sampled array representing original raster
-        sy, sx = self.input_profile['height'], self.input_profile['width']
-        resy, resx = self.input_transform[4], self.input_transform[0]
-        y0, x0 = self.input_transform[5], self.input_transform[2]
+        sy, sx = self.height, self.width
+        resy, resx = self.geotransform[4], self.geotransform[0]
+        y0, x0 = self.geotransform[5], self.geotransform[2]
         y1 = y0 + sy * resy
         x1 = x0 + sx * resx
         nx = np.round(np.abs((x1 - x0) / transform_sampling_distance)).astype(int)
@@ -172,10 +214,10 @@ class VyperRaster:
 
         """
 
-        if self.intersects is None:
-            self.get_interesecting_vdatum_regions()
+        if self.regions is None:
+            raise ValueError('Initialization must have failed, re-initialize with a new gdal supported file')
         print(f'Begin work on {os.path.basename(self.input_file)}')
-        if len(self.intersects) > 0:
+        if len(self.regions) > 0:
             sep, crs = self.get_datum_sep(100)
             self.apply_sep(sep, crs)
         else:
