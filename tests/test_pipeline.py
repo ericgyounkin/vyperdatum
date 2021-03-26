@@ -1,6 +1,3 @@
-'''
-    this file is for testing/debugging only
-'''
 import os
 from pyproj import Transformer
 

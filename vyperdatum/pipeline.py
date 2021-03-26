@@ -15,6 +15,8 @@ TODO: Perhaps we should not specify a geoid file for a datum, but,
     specify a heirarcy for which one to use.  Currently a specific file is
     specified.
 
+TODO: g2012bu0 for CONUS and g2012ba0 for Alaska, need to make that distinction
+
 The basic steps outlined here are:
     1) Find the datum definitions for the input and output datums.
     2) Compare the definitions starting at the base (ellipsoid).  When the
@@ -33,9 +35,15 @@ datum_definition = {
     'mllw'     : ['proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx',
                   'proj=vgridshift grids={region_name}\\tss.gtx',
                   'proj=vgridshift grids={region_name}\\mllw.gtx'],
+    'noaa chart datum': ['proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx',
+                         'proj=vgridshift grids={region_name}\\tss.gtx',
+                         'proj=vgridshift grids={region_name}\\mllw.gtx'],
     'mhw'     : ['proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx',
                  'proj=vgridshift grids={region_name}\\tss.gtx',
                  'proj=vgridshift grids={region_name}\\mhw.gtx']
+    'noaa chart height': ['proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx',
+                          'proj=vgridshift grids={region_name}\\tss.gtx',
+                          'proj=vgridshift grids={region_name}\\mhw.gtx']
     }
 
 

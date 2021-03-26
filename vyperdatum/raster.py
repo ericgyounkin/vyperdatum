@@ -28,13 +28,14 @@ import gdal
 gdal.UseExceptions()
 
 from vyperdatum.core import VyperCore
+from vyperdatum.vypercrs import VerticalPipelineCRS
 
 
 class VyperRaster(VyperCore):
     """
     Transform raster methods
     """
-    def __init__(self, input_file: str, output_datum: str, vdatum_directory: str = None):
+    def __init__(self, input_file: str, output_datum: str, input_file_datum: str = None, vdatum_directory: str = None):
         super().__init__(output_datum, vdatum_directory)
         self.input_file = input_file
         self.geotransform = None
@@ -44,7 +45,11 @@ class VyperRaster(VyperCore):
         self.max_y = None
         self.width = None
         self.height = None
-        self.input_epsg = None
+
+        # expect a vypercrs wkt-like string in the file, or you manually set it with input_file_datum
+        self.input_crs_wkt = None
+        self.vyper_crs = None
+        self.input_override_datum = None
 
         self.layers = []
         self.layernames = []
@@ -60,11 +65,12 @@ class VyperRaster(VyperCore):
         if not ofile:
             raise ValueError(f'Unable to open {self.input_file} with gdal')
 
-        is_epsg = ofile.GetSpatialRef().GetAttrValue("AUTHORITY", 0) == 'EPSG'
-        if is_epsg:
-            self.input_epsg = ofile.GetSpatialRef().GetAttrValue("AUTHORITY", 1)
-        else:
-            raise NotImplementedError('Expect the input tif to have an EPSG attribute in the SpatialReference WKT string')
+        self.input_crs_wkt = ofile.GetSpatialRef().ExportToWkt()
+        try:
+            self.vyper_crs = VerticalPipelineCRS()
+            self.vyper_crs.from_wkt(self.input_crs_wkt)
+        except ValueError:
+            self.vyper_crs = None
 
         self.layers = [ofile.GetRasterBand(i + 1).ReadAsArray() for i in range(ofile.RasterCount)]
         self.nodatavalue = [ofile.GetRasterBand(i + 1).GetNoDataValue() for i in range(ofile.RasterCount)]
