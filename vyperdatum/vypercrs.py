@@ -6,40 +6,20 @@ Need something to build wkt for our custom datum transformations
 Just do the vertical since there aren't any custom horiz transforms that we do.  We can do a compound CRS with the known
 horiz later.  How do we handle these custom vert transformations though?  We have no EPSG registered datum, so it won't be
 something we can directly use in pyproj.  We have to build our own pipeline from a source custom vert to a source custom
-vert.  Use this as a starting point:
-
-VERTCRS["NOAA Chart Datum",
-            BASEVERTCRS["NAD83(2011) Height",
-                        VDATUM["NAD83(2011) Height"],
-                        ID["EPSG",6319]],
-            DERIVINGCONVERSION["NAD83(2011) Height to NOAA Mean Lower Low Water",
-                               METHOD["VDatum_VXXX gtx grid transformation",
-                                 ID["EPSG",1084]],
-                               PARAMETERFILE['g2012bu0', 'core\\geoid12b\\g2012bu0.gtx',
-                                 ID[“NOAA VDatum”, “NAD83 to Geoid12B”, “10/23/2012”]],
-                               PARAMETERFILE['tss', 'CAORblan01_8301\\tss.gtx',
-                                 ID[“NOAA VDatum”, “Geoid12B to Tss", “06/20/2019”]],
-                               PARAMETERFILE['mllw', 'CAORblan01_8301\\mllw.gtx',
-                                 ID[“NOAA VDatum”, “Tss to Mean Lower Low Water”, “06/20/2019”]]],
-            VDATUM["NOAA Chart Datum"],
-            CS[vertical,1],
-              AXIS["gravity-related height (H)",up,
-              LENGTHUNIT["metre",1]]]
-
-The above is apparently not 100% compatible with PROJ.  So we move to using remarks to document the CRS.
-
-VERTCRS["NOAA Chart Datum",
-           VDATUM["NOAA Mean Lower Low Water"],
-           CS[vertical,1],
-             AXIS["gravity-related height (H)",up],
-             LENGTHUNIT["metre",1.0],
-           REMARK["regions=[TXlagmat01_8301, TXlaggal01_8301],
-                   proj=pipeline step proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx step proj=vgridshift grids=REGION\\tss.gtx"]]
+vert.
 """
+
 from pyproj.crs import CRS
+
+from vyperdatum.pipeline import get_regional_pipeline, datum_definition
 
 
 class CoordinateSystem:
+    """
+    Contains the information needed to generate the CS string
+
+    ex: CS[vertical,1], AXIS["gravity-related height (H)",up], LENGTHUNIT["metre",1.0]
+    """
     def __init__(self, axis_type: str = '', axis: tuple = tuple(), units: str = '', is_3d: bool = False):
         self.axis_type = axis_type
         self.axis = axis
@@ -95,6 +75,11 @@ class CoordinateSystem:
 
 
 class VerticalDatum:
+    """
+    Contains the information needed to generate the VDATUM string
+
+    ex: VDATUM["NOAA Mean Lower Low Water"]
+    """
     def __init__(self, datum_string: str = ''):
         self.datum_string = datum_string
 
@@ -110,6 +95,11 @@ class VerticalDatum:
 
 
 class ParameterFile:
+    """
+    Contains the information needed to build the PARAMETERFILE string
+
+    ex: PARAMETERFILE['mllw', 'CAORblan01_8301\\mllw.gtx', ID[“NOAA VDatum”, “Tss to Mean Lower Low Water”, “06/20/2019”]]
+    """
     def __init__(self, grid_source: str, grid_identifier: str, grid_path: str, grid_description: str, grid_date: str):
         self.grid_source = grid_source
         self.grid_identifier = grid_identifier
@@ -155,6 +145,11 @@ class ParameterFile:
 
 
 class DerivingConversion:
+    """
+    Contains the information needed to build the DERIVINGCONVERSION string,
+
+    ex: DERIVINGCONVERSION["NAD83(2011) Height to NOAA Mean Lower Low Water", METHOD["VDatum_VXXX gtx grid transformation", ID["EPSG",1084]]
+    """
     def __init__(self, conversion_string: str = '', method_description: str = ''):
         self.conversion_string = conversion_string
         self.method_description = method_description
@@ -180,7 +175,7 @@ class DerivingConversion:
             wktstring += ','
             pm = ParameterFile(fil[0], fil[1], fil[2], fil[3], fil[4])
             wktstring += pm.to_wkt()
-        wktstring += '],'
+        wktstring += ']'
         return wktstring
 
     def to_pretty_wkt(self):
@@ -202,6 +197,11 @@ class DerivingConversion:
 
 
 class BaseVerticalCRS:
+    """
+    Contains the information needed to build the BASEVERTCRS string:
+
+    ex: BASEVERTCRS["NAD83(2011) Height", VDATUM["NAD83(2011) Height"], ID["EPSG",6319]]
+    """
     def __init__(self, datum_description: str = ''):
         self.datum_descrption = datum_description
 
@@ -233,6 +233,14 @@ class BaseVerticalCRS:
 
 
 class VerticalCRS:
+    """
+    The base class for all the different flavors of vertical CRS.  Contains the different classes and data types that
+    you can use to build the vertical CRS.  See VerticalPipelineCRS and VerticalDerivedCRS to see how it gets used.
+
+    Setting one of the attributes here automatically sets the class that contains that attribute, so you can set the
+    datum name for instance, and go straight to wkt, as the VerticalDatum class gets updated in the setter.
+    """
+
     def __init__(self):
         self._base_crs = BaseVerticalCRS('')
         self._deriving_conversion = DerivingConversion('', '')
@@ -376,6 +384,40 @@ class VerticalCRS:
 
 
 class VerticalDerivedCRS(VerticalCRS):
+    """
+    WARNING: this class generates wkt that is not supported in PROJ, see VerticalPipelineCRS instead
+
+    Builds the DERIVINGCONVERSION data and allows you to add pipelines to it.  This was my first attempt at building
+    a class that would allow us to use a custom vertical datum in PROJ.  The derived vertical CRS is however not
+    supported in PROJ, from Even Rouault:
+
+    'I don't think DerivedVerticalCRS is the appropriate modeling. 3.1.14 mentions: "A derived coordinate reference
+    system inherits its datum or reference frame from its base coordinate reference system.", so you can't have the
+    derived CRS having VDATUM["NOAA Chart Datum"] and the base CRS VDATUM["NAD83(2011) Height"]. And if you look at the
+    grammar (in the docs), VDATUM[] is not allowed for the derived vertical CRS, and when PROJ re-exports to WKT2 this
+    definition, it will omit it.'
+
+    Class is included in vypercrs for reference only.
+
+    ex:
+    VERTCRS["NOAA Chart Datum",
+            BASEVERTCRS["NAD83(2011) Height",
+                        VDATUM["NAD83(2011) Height"],
+                        ID["EPSG",6319]],
+            DERIVINGCONVERSION["NAD83(2011) Height to NOAA Mean Lower Low Water",
+                               METHOD["VDatum gtx grid transformation",
+                                 ID["EPSG",1084]],
+                               PARAMETERFILE['g2012bu0', 'core\\geoid12b\\g2012bu0.gtx',
+                                 ID[“NOAA VDatum”, “NAD83 to Geoid12B”, “10/23/2012”]],
+                               PARAMETERFILE['tss', 'CAORblan01_8301\\tss.gtx',
+                                 ID[“NOAA VDatum”, “Geoid12B to Tss", “06/20/2019”]],
+                               PARAMETERFILE['mllw', 'CAORblan01_8301\\mllw.gtx',
+                                 ID[“NOAA VDatum”, “Tss to Mean Lower Low Water”, “06/20/2019”]]],
+            VDATUM["NOAA Chart Datum"],
+            CS[vertical,1],
+              AXIS["gravity-related height (H)",up,
+              LENGTHUNIT["metre",1]]]
+    """
     def __init__(self, datum_name: str = '', base_datum_name: str = '', conversion_name: str = '',
                  conversion_method: str = '', coordinate_type: str = 'vertical', coordinate_axis: tuple = ('height',),
                  coordinate_units: str = 'm'):
@@ -423,6 +465,22 @@ class VerticalDerivedCRS(VerticalCRS):
 
 
 class VerticalPipelineCRS(VerticalCRS):
+    """
+    This class allows us to specify a custom vertical CRS, by recording the basic metadata of that vertical CRS and
+    storing the PROJ pipeline that gets us to that custom datum in the remarks field.  This is not really operational
+    in PROJ (i.e. we have to run the pipeline ourselves) but it does serve as adequate documentation for now.  Registering
+    our VDatum grids in EPSG will be the eventual solution, which would do away with most of this.
+
+    ex:
+    VERTCRS["NOAA Chart Datum",
+           VDATUM["NOAA Mean Lower Low Water"],
+           CS[vertical,1],
+             AXIS["gravity-related height (H)",up],
+             LENGTHUNIT["metre",1.0],
+           REMARK["regions=[TXlagmat01_8301, TXlaggal01_8301],
+                   proj=pipeline step proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx step proj=vgridshift grids=REGION\\tss.gtx"]]
+    """
+
     def __init__(self, datum_name: str = '', coordinate_type: str = 'vertical',
                  coordinate_axis: tuple = ('height',), coordinate_units: str = 'm'):
 
@@ -478,6 +536,46 @@ class VerticalPipelineCRS(VerticalCRS):
         return CRS.from_wkt(self.to_wkt())
 
 
+def _diff_two_lists(listone, listtwo):
+    return list(set(listone) - set(listtwo)) + list(set(listtwo) - set(listone))
+
+
+def get_transformation_pipeline(in_crs: VerticalPipelineCRS, out_crs: VerticalPipelineCRS, region: str):
+    """
+    Use the datum name in the input/output crs and the region specified to build the pipeline between the two
+    provided CRS.  This means that the datum names of the two crs must be in the datum_definition dictionary.
+
+    Also the region provided must be in the list of regions in both crs objects, unless that crs object is nad83.
+
+    Parameters
+    ----------
+    in_crs
+        VerticalPipelineCRS object representing the start point in the transformation
+    out_crs
+        VerticalPipelineCRS object representing the end point in the transformation
+    region
+        name of the vdatum folder for the region of interest, ex: NYNJhbr34_8301
+
+    Returns
+    -------
+    str
+        PROJ pipeline string specifying the vertical transformation between source incrs and outcrs
+    """
+
+    if in_crs.datum_name.lower() not in datum_definition.keys():
+        raise NotImplementedError(f'Unable to build pipeline, datum name not in the datum definition dict, {in_crs.datum_name} not in {list(datum_definition.keys())}')
+    # nad83 is a special case, there would be no transformation there as it is the pivot datum, all regions (assuming nad83 bounds) are valid
+    if region not in in_crs.regions and in_crs.datum_name.lower() != 'nad83':
+        raise NotImplementedError(f'Unable to build pipeline, region not in input CRS: {region}')
+
+    if out_crs.datum_name.lower() not in datum_definition.keys():
+        raise NotImplementedError(f'Unable to build pipeline, datum name not in the datum definition dict, {out_crs.datum_name} not in {list(datum_definition.keys())}')
+    if region not in out_crs.regions and out_crs.datum_name.lower() != 'nad83':
+        raise NotImplementedError(f'Unable to build pipeline, region not in output CRS: {region}')
+
+    return get_regional_pipeline(in_crs.datum_name, out_crs.datum_name, region)
+
+
 if __name__ == '__main__':
     vs = VerticalPipelineCRS("NOAA Chart Datum")
     vs.add_pipeline(
@@ -487,9 +585,13 @@ if __name__ == '__main__':
         "proj=pipeline step proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx step proj=vgridshift grids=REGION\\tss.gtx",
         "TXlaggal01_8301")
 
+    vstwo = VerticalPipelineCRS("nad83")
+    vstwo.add_pipeline(
+        "proj=pipeline step proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx step proj=vgridshift grids=REGION\\tss.gtx proj=vgridshift grids=regionname\\mllw.gtx",
+        "TXlagmat01_8301")
+    vstwo.add_pipeline(
+        "proj=pipeline step proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx step proj=vgridshift grids=REGION\\tss.gtx proj=vgridshift grids=regionname\\mllw.gtx",
+        "TXlaggal01_8301")
+
     print(vs.to_pretty_wkt())
-
-    vstwo = VerticalPipelineCRS()
-    vstwo.from_wkt(vs.to_wkt())
-
-    print(vstwo.to_pretty_wkt())
+    print(get_transformation_pipeline(vs, vstwo, "TXlagmat01_8301"))

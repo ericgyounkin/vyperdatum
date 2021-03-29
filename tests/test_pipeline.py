@@ -6,7 +6,8 @@ from vyperdatum.core import VyperCore
 
 
 def get_test_grid():
-    vc = VyperCore('tst')  # load this to get the cached vdatum path
+    vc = VyperCore()  # load this to get the cached vdatum path
+    # first time, you need to run it with the path to the vdatum folder, vc = VyperCore('path\to\vdatum')
     if not os.path.exists(vc.vdatum.vdatum_path):
         raise EnvironmentError('You have to run VyperCore once and set the vdatum path in order for this to work')
     tstgrid = os.path.join(vc.vdatum.vdatum_path, 'CAORblan01_8301')

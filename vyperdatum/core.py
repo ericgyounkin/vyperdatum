@@ -1,23 +1,13 @@
-"""
-vyperdatum_core.py
-
-grice 2021-02-25
-
-The core object and supporting methods for transforming a series of points
-from one vertical datum to another using proj pipelines.
-"""
-
-import os, sys, glob, logging, configparser
+import os, sys, glob, configparser
 import numpy as np
 from pyproj import Transformer, datadir
-from pyproj.crs import CompoundCRS
-import gdal
-from gdal import ogr
+from osgeo import gdal, ogr
 from typing import Any
 
-gdal.UseExceptions()
-
+from vyperdatum.vypercrs import VerticalPipelineCRS, get_transformation_pipeline
 from vyperdatum.pipeline import get_regional_pipeline
+
+gdal.UseExceptions()
 
 
 class VyperCore:
@@ -30,42 +20,42 @@ class VyperCore:
         Confirm horizontal datum is either as needed by pipeline or add in horiontal
         transformation.
         
-        
     TODO: We need to pull in the uncertainty associated with a datum transformation
         and return that value by point.
     """
-    def __init__(self, output_datum: str, vdatum_directory: str = None) -> bool:
+    def __init__(self, vdatum_directory: str = None):
+        # if vdatum_directory is provided initialize VdatumData with that path
         self.vdatum = VdatumData(vdatum_directory=vdatum_directory)
-        # build output WKT string
-        self.output_datum = output_datum
 
+        self.in_crs = None
+        self.out_crs = None
         self.regions = []
-        
-    def set_region_by_bounds(self, x_min, y_min, x_max, y_max):
+
+    def set_region_by_bounds(self, x_min: float, y_min: float, x_max: float, y_max: float):
         """
-        Set the regions that intersect with the provided bounds and return.
+        Set the regions that intersect with the provided bounds and return a list of region names that overlap
 
         Parameters
         ----------
-        x_min : TYPE
-            DESCRIPTION.
-        y_min : TYPE
-            DESCRIPTION.
-        x_max : TYPE
-            DESCRIPTION.
-        y_max : TYPE
-            DESCRIPTION.
-
-        Returns
-        -------
-        None
-
+        x_min
+            the minimum longitude of the area of interest
+        y_min
+            the minimum latitude of the area of interest
+        x_max
+            the maximum longitude of the area of interest
+        y_max
+            the maximum latitude of the area of interest
         """
+
+        assert x_min < x_max
+        assert y_min < y_max
+
         # build corners from the provided bounds
         ul = (x_min, y_max)
         ur = (x_max, y_max)
         lr = (x_max, y_min)
         ll = (x_min, y_min)
+
         # build polygon from corners
         ring = ogr.Geometry(ogr.wkbLinearRing)
         ring.AddPoint(ul[0], ul[1])
@@ -73,8 +63,9 @@ class VyperCore:
         ring.AddPoint(lr[0], lr[1])
         ring.AddPoint(ll[0], ll[1])
         ring.AddPoint(ul[0], ul[1])
-        dataGeometry = ogr.Geometry(ogr.wkbPolygon)
-        dataGeometry.AddGeometry(ring)
+        data_geometry = ogr.Geometry(ogr.wkbPolygon)
+        data_geometry.AddGeometry(ring)
+
         # see if the regions intersect with the provided geometries
         intersecting_regions = []
         for region in self.vdatum.polygon_files:
@@ -88,13 +79,55 @@ class VyperCore:
                     feature_name = feature.GetField(0)
                     if feature_name[:15] == 'valid-transform':
                         valid_vdatum_poly = feature.GetGeometryRef()
-                        if dataGeometry.Intersect(valid_vdatum_poly):
+                        if data_geometry.Intersect(valid_vdatum_poly):
                             intersecting_regions.append(region)
+                    feature = None
+                layer = None
             vector = None
         self.regions = intersecting_regions
 
-    def run_pipeline(self, x, y, pipeline, z=None):
-        if not z:
+    def is_alaska(self):
+        if self.regions:
+            is_alaska = all([t.find('AK') != -1 for t in self.regions])
+            is_not_alaska = all([t.find('AK') == -1 for t in self.regions])
+            if not is_alaska and not is_not_alaska:
+                raise NotImplementedError('Regions in and not in alaska specified, not currently supported')
+            if is_alaska:
+                return True
+            else:
+                return False
+        else:
+            raise ValueError('No regions specified, unable to determine is_alaska')
+
+    def _build_datum_from_string(self, datum: str):
+        if self.regions:
+            new_crs = VerticalPipelineCRS(datum)
+            base_region = self.regions[0]
+            base_pipeline = get_regional_pipeline('nad83', datum, base_region, is_alaska=self.is_alaska())
+            for r in self.regions:
+                new_crs.add_pipeline(base_pipeline, r)
+            return new_crs
+        else:
+            raise ValueError('No regions specified, unable to construct new vyperdatum crs')
+
+    def set_input_datum(self, input_datum: str):
+        try:
+            incrs = VerticalPipelineCRS()
+            incrs.from_wkt(input_datum)
+        except ValueError:
+            incrs = self._build_datum_from_string(input_datum)
+        self.in_crs = incrs
+
+    def set_output_datum(self, output_datum: str):
+        try:
+            outcrs = VerticalPipelineCRS()
+            outcrs.from_wkt(output_datum)
+        except ValueError:
+            outcrs = self._build_datum_from_string(output_datum)
+        self.out_crs = outcrs
+
+    def _run_pipeline(self, x, y, pipeline, z=None):
+        if z is None:
             z = np.zeros(len(x))
         assert len(x) == len(y) and len(y) == len(z)
 
@@ -105,34 +138,26 @@ class VyperCore:
         print(message)
         return result
 
-    def check_datums(self, incrs):
-        # this section is just copy and pasted junk
-        req_hcrs_epsg = 26919
-        req_vcrs_epsg = 'mllw'
+    def tranform_dataset(self, x: np.array, y: np.array, z: np.array = None):
+        if self.regions:
+            ans_x = np.full_like(x, np.nan)
+            ans_y = np.full_like(y, np.nan)
+            if z is None:
+                z = np.zeros(len(x))
+            ans_z = np.full_like(z, np.nan)
+            for region in self.regions:
+                # get the pipeline
+                pipeline = get_transformation_pipeline(self.in_crs, self.out_crs, region)
+                tmp_x, tmp_y, tmp_z = self._run_pipeline(x, y, pipeline, z=z)
 
-        # parse the provided CRS
-        cmpd_incrs = CompoundCRS.from_wkt(incrs.to_wkt())
-        if len(cmpd_incrs.sub_crs_list) == 2:
-            inhcrs, invcrs = cmpd_incrs.sub_crs_list
-            assert inhcrs.to_epsg() == req_hcrs_epsg
-            assert invcrs.to_epsg() == req_vcrs_epsg
-        elif not cmpd_incrs.is_vertical:
-            assert incrs.to_epsg() == req_hcrs_epsg
-
-    def build_crs(self):
-        # this section is just copy and pasted junk
-        req_hcrs_epsg = 26919
-        out_vcrs_epsg = 5703
-        comp_crs = CompoundCRS(name="NAD83 UTM19 + NAVD88", components=[f"EPSG:{req_hcrs_epsg}", f"EPSG:{out_vcrs_epsg}"])
-        return comp_crs
-
-    def tranform_dataset(self, x: np.array, y: np.array, input_datum, region: str, z: np.array = None):
-        # get the pipeline
-        pipeline = get_regional_pipeline(input_datum, self.output_datum, region)
-        x, y, z = self.run_pipeline(x, y, pipeline, z=z)
-        # areas outside the coverage of the vert shift are inf, set them to NaN
-        z[np.isinf(z)] = np.nan
-        return z
+                # areas outside the coverage of the vert shift are inf
+                valid_index = ~np.isinf(tmp_z)
+                ans_x[valid_index] = tmp_x[valid_index]
+                ans_y[valid_index] = tmp_y[valid_index]
+                ans_z[valid_index] = tmp_z[valid_index]
+            return ans_x, ans_y, np.round(ans_z, 3)
+        else:
+            raise ValueError('No regions specified, unable to transform points')
 
 
 class VdatumData:

@@ -29,25 +29,26 @@ The basic steps outlined here are:
 datum_definition = {
     'nad83'    : [],
     'geoid12b' : ['proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx'],
+    'xgeoid18b': ['proj=vgridshift grids=core\\xgeoid18b\\AK_18B.gtx'],
     'navd88'   : ['proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx'],
     'tss'      : ['proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx',
-                  'proj=vgridshift grids={region_name}\\tss.gtx'],
+                  'proj=vgridshift grids=REGION\\tss.gtx'],
     'mllw'     : ['proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx',
-                  'proj=vgridshift grids={region_name}\\tss.gtx',
-                  'proj=vgridshift grids={region_name}\\mllw.gtx'],
+                  'proj=vgridshift grids=REGION\\tss.gtx',
+                  'proj=vgridshift grids=REGION\\mllw.gtx'],
     'noaa chart datum': ['proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx',
-                         'proj=vgridshift grids={region_name}\\tss.gtx',
-                         'proj=vgridshift grids={region_name}\\mllw.gtx'],
+                         'proj=vgridshift grids=REGION\\tss.gtx',
+                         'proj=vgridshift grids=REGION\\mllw.gtx'],
     'mhw'     : ['proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx',
-                 'proj=vgridshift grids={region_name}\\tss.gtx',
-                 'proj=vgridshift grids={region_name}\\mhw.gtx']
+                 'proj=vgridshift grids=REGION\\tss.gtx',
+                 'proj=vgridshift grids=REGION\\mhw.gtx'],
     'noaa chart height': ['proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx',
-                          'proj=vgridshift grids={region_name}\\tss.gtx',
-                          'proj=vgridshift grids={region_name}\\mhw.gtx']
+                          'proj=vgridshift grids=REGION\\tss.gtx',
+                          'proj=vgridshift grids=REGION\\mhw.gtx']
     }
 
 
-def get_regional_pipeline(from_datum: str, to_datum: str, region_name: str) -> [str]:
+def get_regional_pipeline(from_datum: str, to_datum: str, region_name: str, is_alaska: bool = False) -> [str]:
     """
     Return a string describing the pipeline to use to convert between the
     provided datums.
@@ -86,7 +87,10 @@ def get_regional_pipeline(from_datum: str, to_datum: str, region_name: str) -> [
     reversed_input_def = inverse_datum_def(input_datum_def)
     transformation_def = ['proj=pipeline', *reversed_input_def, *output_datum_def]
     pipeline = ' step '.join(transformation_def)
-    regional_pipeline = pipeline.replace('{region_name}', region_name)
+    regional_pipeline = pipeline.replace('REGION', region_name)
+    if is_alaska:
+        regional_pipeline = regional_pipeline.replace('geoid12b', 'xgeoid18b')
+        regional_pipeline = regional_pipeline.replace('g2012bu0', 'AK_18B')
     return regional_pipeline
 
 

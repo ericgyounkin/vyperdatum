@@ -1,4 +1,4 @@
-import gdal
+from osgeo import gdal
 
 version = gdal.VersionInfo()
 major = int(version[0])
