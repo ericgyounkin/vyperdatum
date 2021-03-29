@@ -134,17 +134,56 @@ class VyperCore:
         # get the transform at the sparse points
         transformer = Transformer.from_pipeline(pipeline)
         result = transformer.transform(xx=x, yy=y, zz=z)
-        message = f'Applying pipeline: {transformer}'
-        print(message)
         return result
 
-    def tranform_dataset(self, x: np.array, y: np.array, z: np.array = None):
+    def _get_output_uncertainty(self, region: str):
+        """
+        Get the output uncertainty for each point by reading the vdatum_sigma.inf file and combining the uncertainties
+        that apply for this region.
+
+        Currently we use the output datum pipeline as the source of uncertainty.  Might
+        be better to use the transformation pipeline instead.  The way it currently works, if your output datum is NAD83,
+        there would be no pipeline (as nad83 is the pivot datum) and so you would have 0 uncertainty, even if you did transform
+        from MLLW to NAD83.
+
+        Parameters
+        ----------
+        region
+            region name as string
+
+        Returns
+        -------
+        float
+            uncertainty associated with each transformed point
+        """
+
+        if not self.out_crs.pipeline_string:  # if nad83 is the output datum, no transformation is done
+            return 0
+        final_uncertainty = 0
+        layer_names = ['lmsl', 'mhhw', 'mhw', 'mtl', 'dtl', 'mlw', 'mllw']
+        for lyr in layer_names:
+            if self.out_crs.pipeline_string.find(lyr) != -1:
+                final_uncertainty += self.vdatum.uncertainties[region][lyr]
+
+        if self.out_crs.pipeline_string.find('geoid12b') != -1:
+            final_uncertainty += self.vdatum.uncertainties['geoid12b']
+        elif self.out_crs.pipeline_string.find('xgeoid18b') != -1:
+            final_uncertainty += self.vdatum.uncertainties['xgeoid18b']
+        else:
+            raise ValueError('Unable to find either geoid12b or xgeoid18b in the output datum pipeline, which geoid is used?')
+        return final_uncertainty
+
+    def transform_dataset(self, x: np.array, y: np.array, z: np.array = None, include_vdatum_uncertainty: bool = True):
         if self.regions:
             ans_x = np.full_like(x, np.nan)
             ans_y = np.full_like(y, np.nan)
             if z is None:
                 z = np.zeros(len(x))
             ans_z = np.full_like(z, np.nan)
+            if include_vdatum_uncertainty:
+                ans_unc = np.full_like(z, np.nan)
+            else:
+                ans_unc = None
             for region in self.regions:
                 # get the pipeline
                 pipeline = get_transformation_pipeline(self.in_crs, self.out_crs, region)
@@ -155,7 +194,9 @@ class VyperCore:
                 ans_x[valid_index] = tmp_x[valid_index]
                 ans_y[valid_index] = tmp_y[valid_index]
                 ans_z[valid_index] = tmp_z[valid_index]
-            return ans_x, ans_y, np.round(ans_z, 3)
+                if include_vdatum_uncertainty:
+                    ans_unc[valid_index] = self._get_output_uncertainty(region)
+            return ans_x, ans_y, np.round(ans_z, 3), ans_unc
         else:
             raise ValueError('No regions specified, unable to transform points')
 
@@ -173,6 +214,7 @@ class VdatumData:
     def __init__(self, vdatum_directory: str = None):
         self.grid_files = {}  # dict of file names to file paths for the gtx files
         self.polygon_files = {}  # dict of file names to file paths for the kml files
+        self.uncertainties = {}  # dict of file names to uncertainties for each grid
         self.vdatum_path = ''  # path to the parent vdatum folder
 
         self._config = {}  # dict of all the settings
@@ -285,12 +327,10 @@ class VdatumData:
             datadir.append_data_dir(vdatum_path)
     
         # also want to populate grids and polygons with what we find
-        newgrids = get_gtx_grid_list(vdatum_path)
-        for gname, gpath in newgrids.items():
-            self.grid_files[gname] = gpath
-        newpolys = get_vdatum_region_polygons(vdatum_path)
-        for pname, ppath in newpolys.items():
-            self.polygon_files[pname] = ppath
+        self.grid_files = get_gtx_grid_list(vdatum_path)
+        self.polygon_files = get_vdatum_region_polygons(vdatum_path)
+        self.uncertainties = get_vdatum_uncertainties(vdatum_path)
+
         self.vdatum_path = self._config['vdatum_path']
 
 
@@ -333,7 +373,6 @@ def get_vdatum_region_polygons(vdatum_directory: str):
     vdatum_directory
         absolute folder path to the vdatum directory
 
-
     Returns
     -------
     dict
@@ -351,3 +390,57 @@ def get_vdatum_region_polygons(vdatum_directory: str):
         root_dir, kml_name = os.path.split(kml_path)
         geom[kml_name] = kml
     return geom
+
+
+def get_vdatum_uncertainties(vdatum_directory: str):
+    """"
+    Parse the sigma file to build a dictionary of gridname: uncertainty for each layer.
+
+    Parameters
+    ----------
+    vdatum_directory
+        absolute folder path to the vdatum directory
+
+    Returns
+    -------
+    dict
+        dictionary of {kml name: kml path, ...}
+    """
+    acc_file = os.path.join(vdatum_directory, 'vdatum_sigma.inf')
+
+    # use the polygon search to get a dict of all grids quickly
+    grid_dict = get_vdatum_region_polygons(vdatum_directory)
+    for k in grid_dict.keys():
+        grid_dict[k] = {'lmsl': 0, 'mhhw': 0, 'mhw': 0, 'mtl': 0, 'dtl': 0, 'mlw': 0, 'mllw': 0}
+    # add in the geoids we care about
+    grid_entries = list(grid_dict.keys())
+
+    with open(acc_file, 'r') as afil:
+        for line in afil.readlines():
+            data = line.split('=')
+            if len(data) == 2:  # a valid line, ex: nynjhbr.lmsl=1.4
+                data_entry, val = data
+                sub_data = data_entry.split('.')
+                if len(sub_data) == 2:
+                    prefix, suffix = sub_data  # flpensac.mhw=1.8
+                # elif len(sub_data) == 3:
+                #     prefix, _, suffix = sub_data  # akyakutat.lmsl.mhhw=6.6
+                    if prefix == 'conus':
+                        if suffix == 'navd88':
+                            grid_dict['geoid12b'] = float(val)
+                        elif suffix == 'xgeoid18b':
+                            grid_dict['xgeoid18b'] = float(val)
+                    else:
+                        match = np.where(np.array([entry.lower().find(prefix) for entry in grid_entries]) == 0)
+                        if match[0].size:
+                            if len(match[0]) > 1:
+                                raise ValueError(f'Found multiple matches in vdatum_sigma file for entry {data_entry}')
+                            elif match:
+                                grid_key = grid_entries[match[0][0]]
+                                val = val.lstrip().rstrip()
+                                if val == 'n/a':
+                                    val = 0
+                                grid_dict[grid_key][suffix] = float(val)
+                            else:
+                                print(f'No match for vdatum_sigma entry {data_entry}!')
+    return grid_dict

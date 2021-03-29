@@ -65,11 +65,18 @@ def test_transform_dataset():
     x = np.array([-75.79180, -75.79190, -75.79200])
     y = np.array([36.01570, 36.01560, 36.01550])
     z = np.array([10.5, 11.0, 11.5])
-    newx, newy, newz = vc.tranform_dataset(x, y, z)
+    newx, newy, newz, _ = vc.transform_dataset(x, y, z, include_vdatum_uncertainty=False)
 
     assert (x == newx).all()
     assert (y == newy).all()
     assert (newz == np.array([49.490, 49.990, 50.490])).all()
+
+    assert vc.out_crs.to_wkt() == 'VERTCRS["mllw",VDATUM["mllw"],' \
+                                  'CS[vertical,1],AXIS["gravity-related height (H)",up],LENGTHUNIT["metre",1],' \
+                                  'REMARK["regions=[NCcoast11_8301,NCinner11_8301],' \
+                                  'pipeline=proj=pipeline step proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx ' \
+                                  'step proj=vgridshift grids=NCcoast11_8301\\tss.gtx ' \
+                                  'step proj=vgridshift grids=NCcoast11_8301\\mllw.gtx"]]'
 
 
 def test_transform_dataset_inv():
@@ -80,8 +87,28 @@ def test_transform_dataset_inv():
     x = np.array([-75.79180, -75.79190, -75.79200])
     y = np.array([36.01570, 36.01560, 36.01550])
     z = np.array([49.490, 49.990, 50.490])
-    newx, newy, newz = vc.tranform_dataset(x, y, z)
+    newx, newy, newz, _ = vc.transform_dataset(x, y, z, include_vdatum_uncertainty=False)
 
     assert (x == newx).all()
     assert (y == newy).all()
     assert (newz == np.array([10.5, 11.0, 11.5])).all()
+
+    assert vc.out_crs.to_wkt() == 'VERTCRS["nad83",VDATUM["nad83"],' \
+                                  'CS[vertical,1],AXIS["gravity-related height (H)",up],LENGTHUNIT["metre",1],' \
+                                  'REMARK["regions=[NCcoast11_8301,NCinner11_8301],pipeline=None"]]'
+
+
+def test_transform_dataset_unc():
+    vc = VyperCore()
+    vc.set_region_by_bounds(-75.79179, 35.80674, -75.3853, 36.01585)
+    vc.set_input_datum('nad83')
+    vc.set_output_datum('mllw')
+    x = np.array([-75.79180, -75.79190, -75.79200])
+    y = np.array([36.01570, 36.01560, 36.01550])
+    z = np.array([10.5, 11.0, 11.5])
+    newx, newy, newz, newunc = vc.transform_dataset(x, y, z)
+
+    assert (x == newx).all()
+    assert (y == newy).all()
+    assert (newz == np.array([49.490, 49.990, 50.490])).all()
+    assert (newunc == np.array([6.5, 6.5, 6.5])).all()  # ncinner.mllw=1.5, conus.navd88=5.0
