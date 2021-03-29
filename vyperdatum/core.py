@@ -1,8 +1,8 @@
 import os, sys, glob, configparser
 import numpy as np
-from pyproj import Transformer, datadir
+from pyproj import Transformer, datadir, CRS
 from osgeo import gdal, ogr
-from typing import Any
+from typing import Any, Union
 
 from vyperdatum.vypercrs import VerticalPipelineCRS, get_transformation_pipeline
 from vyperdatum.pipeline import get_regional_pipeline
@@ -29,6 +29,8 @@ class VyperCore:
 
         self.in_crs = None
         self.out_crs = None
+        self.transformed_from = None
+
         self.regions = []
 
     def set_region_by_bounds(self, x_min: float, y_min: float, x_max: float, y_max: float):
@@ -110,7 +112,37 @@ class VyperCore:
         else:
             raise ValueError('No regions specified, unable to construct new vyperdatum crs')
 
-    def set_input_datum(self, input_datum: str):
+    def _transform_to_nad83(self, source_epsg: int, x: np.array, y: np.array, z: np.array = None):
+        """
+        
+        Parameters
+        ----------
+        source_epsg
+        x
+        y
+        z
+
+        Returns
+        -------
+
+        """
+        in_crs = CRS.from_epsg(source_epsg)
+        out_crs = CRS.from_epsg(6319)
+        # Transformer.transform input order is based on the CRS, see CRS.geodetic_crs.axis_info
+        # - lon, lat - this appears to be valid when using CRS from proj4 string
+        # - lat, lon - this appears to be valid when using CRS from epsg
+        # use the always_xy option to force the transform to expect lon/lat order
+        transformer = Transformer.from_crs(in_crs, out_crs, always_xy=True)
+
+        if z is None:
+            z = np.zeros_like(x)
+        x, y, z = transformer.transform(x, y, z)
+        return x, y, z
+
+    def set_input_datum(self, input_datum: Union[str, int]):
+        if isinstance(input_datum, int):
+            self.transformed_from = input_datum
+            input_datum = 'NAD83'
         try:
             incrs = VerticalPipelineCRS()
             incrs.from_wkt(input_datum)
@@ -175,6 +207,8 @@ class VyperCore:
 
     def transform_dataset(self, x: np.array, y: np.array, z: np.array = None, include_vdatum_uncertainty: bool = True):
         if self.regions:
+            if self.transformed_from:
+                x, y, z = self._transform_to_nad83(self.transformed_from, x, y, z)
             ans_x = np.full_like(x, np.nan)
             ans_y = np.full_like(y, np.nan)
             if z is None:
@@ -427,9 +461,9 @@ def get_vdatum_uncertainties(vdatum_directory: str):
                 #     prefix, _, suffix = sub_data  # akyakutat.lmsl.mhhw=6.6
                     if prefix == 'conus':
                         if suffix == 'navd88':
-                            grid_dict['geoid12b'] = float(val)
+                            grid_dict['geoid12b'] = float(val) * 0.01  # answer in meters
                         elif suffix == 'xgeoid18b':
-                            grid_dict['xgeoid18b'] = float(val)
+                            grid_dict['xgeoid18b'] = float(val) * 0.01
                     else:
                         match = np.where(np.array([entry.lower().find(prefix) for entry in grid_entries]) == 0)
                         if match[0].size:
@@ -440,7 +474,7 @@ def get_vdatum_uncertainties(vdatum_directory: str):
                                 val = val.lstrip().rstrip()
                                 if val == 'n/a':
                                     val = 0
-                                grid_dict[grid_key][suffix] = float(val)
+                                grid_dict[grid_key][suffix] = float(val) * 0.01
                             else:
                                 print(f'No match for vdatum_sigma entry {data_entry}!')
     return grid_dict

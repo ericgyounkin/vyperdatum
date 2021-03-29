@@ -1,3 +1,5 @@
+from pytest import approx
+
 from vyperdatum.core import *
 
 
@@ -110,5 +112,23 @@ def test_transform_dataset_unc():
 
     assert (x == newx).all()
     assert (y == newy).all()
-    assert (newz == np.array([49.490, 49.990, 50.490])).all()
-    assert (newunc == np.array([6.5, 6.5, 6.5])).all()  # ncinner.mllw=1.5, conus.navd88=5.0
+    assert (newz == np.array([49.490, 49.990, 50.490])).all()  # no vert transformation with 2d source epsg
+    assert (newunc == np.array([0.065, 0.065, 0.065])).all()  # ncinner.mllw=1.5, conus.navd88=5.0
+
+
+def test_transform_dataset_stateplane():
+    # try out the built in transform from EPSG to nad83 to get the new horiz and vert
+    # if you provide an EPSG that is a 2d system, it assumes the z provided is at nad83
+    vc = VyperCore()
+    vc.set_region_by_bounds(-75.79179, 35.80674, -75.3853, 36.01585)
+    vc.set_input_datum(3631)  # testing with NorthCarolina nad83 ft us
+    vc.set_output_datum('mllw')
+    x = np.array([898745.505, 898736.854, 898728.203])
+    y = np.array([256015.372, 256003.991, 255992.610])
+    z = np.array([10.5, 11.0, 11.5])
+    newx, newy, newz, newunc = vc.transform_dataset(x, y, z)
+
+    assert (newx == approx(np.array([-75.7917999, -75.7918999, -75.7919999]), 0.000001))
+    assert (newy == approx(np.array([36.0156999, 36.01559999, 36.01549999]), 0.000001))
+    assert (newz == np.array([49.490, 49.990, 50.490])).all()  # no vert transformation with 2d source epsg
+    assert (newunc == np.array([0.065, 0.065, 0.065])).all()  # ncinner.mllw=1.5, conus.navd88=5.0
