@@ -540,7 +540,7 @@ def _diff_two_lists(listone, listtwo):
     return list(set(listone) - set(listtwo)) + list(set(listtwo) - set(listone))
 
 
-def get_transformation_pipeline(in_crs: VerticalPipelineCRS, out_crs: VerticalPipelineCRS, region: str):
+def get_transformation_pipeline(in_crs: VerticalPipelineCRS, out_crs: VerticalPipelineCRS, region: str, is_alaska: bool = False):
     """
     Use the datum name in the input/output crs and the region specified to build the pipeline between the two
     provided CRS.  This means that the datum names of the two crs must be in the datum_definition dictionary.
@@ -555,6 +555,8 @@ def get_transformation_pipeline(in_crs: VerticalPipelineCRS, out_crs: VerticalPi
         VerticalPipelineCRS object representing the end point in the transformation
     region
         name of the vdatum folder for the region of interest, ex: NYNJhbr34_8301
+    is_alaska
+        # if True, regions are in alaska, which means we need to do a string replace to go to xgeoid18b
 
     Returns
     -------
@@ -573,7 +575,7 @@ def get_transformation_pipeline(in_crs: VerticalPipelineCRS, out_crs: VerticalPi
     if region not in out_crs.regions and out_crs.datum_name.lower() != 'nad83':
         raise NotImplementedError(f'Unable to build pipeline, region not in output CRS: {region}')
 
-    return get_regional_pipeline(in_crs.datum_name, out_crs.datum_name, region)
+    return get_regional_pipeline(in_crs.datum_name, out_crs.datum_name, region, is_alaska=is_alaska)
 
 
 if __name__ == '__main__':

@@ -1,31 +1,5 @@
-"""
-pipeline.py
-
-The proj pipeline string generator.
-
-The pipelines are currently stored as a dictionary, but a lightweight database
-likely makes more sense so that specific datum and epochs (and versions?) can
-be queried.
-
-TODO: We need a WKT to datum definition lookup generator, unless the WKT 
-    contains the information to specify specific tranformation layers.
-
-TODO: Perhaps we should not specify a geoid file for a datum, but,
-    like the VDatum regions, find which ones intersect a specific dataset and
-    specify a heirarcy for which one to use.  Currently a specific file is
-    specified.
-
-TODO: g2012bu0 for CONUS and g2012ba0 for Alaska, need to make that distinction
-
-The basic steps outlined here are:
-    1) Find the datum definitions for the input and output datums.
-    2) Compare the definitions starting at the base (ellipsoid).  When the
-       definitions no long agree, stop.
-    3) Reverse the remaining input datum layers and prepend 'inv' to each layer.
-    4) String the input and output layers together.
-"""
-
 # All datum definitions are defined relative to the same 'pivot' ellipsoid.
+
 datum_definition = {
     'nad83'    : [],
     'geoid12b' : ['proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx'],
@@ -48,10 +22,9 @@ datum_definition = {
     }
 
 
-def get_regional_pipeline(from_datum: str, to_datum: str, region_name: str, is_alaska: bool = False) -> [str]:
+def get_regional_pipeline(from_datum: str, to_datum: str, region_name: str, is_alaska: bool = False):
     """
-    Return a string describing the pipeline to use to convert between the
-    provided datums.
+    Return a string describing the pipeline to use to convert between the provided datums.
 
     Parameters
     ----------
@@ -61,6 +34,8 @@ def get_regional_pipeline(from_datum: str, to_datum: str, region_name: str, is_a
         A string corresponding to one of the stored datums.
     region_name: str
         A region name corrisponding to a VDatum subfolder name.
+    is_alaska
+        if True, regions are in alaska, which means we need to do a string replace to go to xgeoid18b
 
     Raises
     ------
@@ -101,45 +76,36 @@ def _validate_datum_names(from_datum: str, to_datum: str):
 
     Parameters
     ----------
-    from_datum : str
-        DESCRIPTION.
+    from_datum
+        datum string for the source datum, must be in datum definitions
     to_datum : str
-        DESCRIPTION.
-
-    Raises
-    ------
-    ValueError
-        DESCRIPTION.
-
-    Returns
-    -------
-    None.
-
+        datum string for the destination datum, must be in datum definitions
     """
+
     if from_datum not in datum_definition:
         raise ValueError(f'Input datum {from_datum} not found in datum definitions.')
     if to_datum not in datum_definition:
         raise ValueError(f'Output datum {to_datum} not found in datum definitions.')
 
 
-def compare_datums(in_datum_def: [str], out_datum_def: [str]) -> [[str], [str]]:
+def compare_datums(in_datum_def: list, out_datum_def: list):
     """
-    Compare two lists describing the datums.  Remove common parts of the
-    definition starting from the first entry.  Stop when they do not agree.
+    Compare two lists describing the datums.  Remove common parts of the definition starting from the first entry.
+    Stop when they do not agree.
 
     Parameters
     ----------
-    in_datum_def : [str]
+    in_datum_def
         The datum definition as described in the datum defition database.
-    out_datum_def : [str]
+    out_datum_def
         The datum definition as described in the datum defition database.
 
     Returns
     -------
-    [[str],[str]]
+    list
         A reduced list of the input datum and output datum layers.
-
     """
+
     num_to_compare = min(len(in_datum_def), len(out_datum_def))
     remove_these = []
     for n in range(num_to_compare):
@@ -151,19 +117,19 @@ def compare_datums(in_datum_def: [str], out_datum_def: [str]) -> [[str], [str]]:
     return [in_datum_def, out_datum_def]
 
 
-def inverse_datum_def(datum_def: [str]) -> [str]:
+def inverse_datum_def(datum_def: list):
     """
     Reverse the order of the datum definition list and prepend 'inv' to each
     layer.
 
     Parameters
     ----------
-    datum_def : [str]
+    datum_def
         A list describing the layers of a datum definition.
 
     Returns
     -------
-    [str]
+    list
         The provided list reversed with 'inv' prepended to each layer.
 
     """

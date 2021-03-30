@@ -7,22 +7,31 @@ from typing import Any, Union
 from vyperdatum.vypercrs import VerticalPipelineCRS, get_transformation_pipeline
 from vyperdatum.pipeline import get_regional_pipeline
 
-gdal.UseExceptions()
-
 
 class VyperCore:
     """
-    The core object for conducting transformations.
-    
-    provide output_datums -> pipeline
-    
-    TODO:
-        Confirm horizontal datum is either as needed by pipeline or add in horiontal
-        transformation.
-        
-    TODO: We need to pull in the uncertainty associated with a datum transformation
-        and return that value by point.
+    The core object for conducting transformations.  Contains all the information built automatically from the vdatum
+    distribution, including paths to gtx files and uncertainty per grid.  VyperCore uses this information to provide
+    a transformation method to go from source datum to EPSG with a vertical or 3d transformation, depending on
+    source datum.
+
+    vc = VyperCore()
+    vc.set_region_by_bounds(-75.79179, 35.80674, -75.3853, 36.01585)
+
+    # choose one of these
+    # a 3d transformation from state plane to NAD83/MLLW
+    vc.set_input_datum(3631)
+    # a vertical transformation from NAD83/ELHeight to NAD83/MLLW
+    vc.set_input_datum('nad83')
+
+    vc.set_output_datum('mllw')
+    x = np.array([898745.505, 898736.854, 898728.203])
+    y = np.array([256015.372, 256003.991, 255992.610])
+    z = np.array([10.5, 11.0, 11.5])
+    newx, newy, newz, newunc = vc.transform_dataset(x, y, z)
+
     """
+
     def __init__(self, vdatum_directory: str = None):
         # if vdatum_directory is provided initialize VdatumData with that path
         self.vdatum = VdatumData(vdatum_directory=vdatum_directory)
@@ -35,7 +44,7 @@ class VyperCore:
 
     def set_region_by_bounds(self, x_min: float, y_min: float, x_max: float, y_max: float):
         """
-        Set the regions that intersect with the provided bounds and return a list of region names that overlap
+        Set the regions that intersect with the provided bounds and store a list of region names that overlap.
 
         Parameters
         ----------
@@ -89,6 +98,19 @@ class VyperCore:
         self.regions = intersecting_regions
 
     def is_alaska(self):
+        """
+        A somewhat weak implementation of a method to determine if these regions are in alaska.  Currently, alaskan
+        tidal datums are based on xgeoid18, so we need to identify those regions to ensure we use the correct geoid
+        during transformation.
+
+        Could probably just use the geographic bounds, but this method works and is less expensive.
+
+        Returns
+        -------
+        bool
+            True if regions are in alaska
+        """
+
         if self.regions:
             is_alaska = all([t.find('AK') != -1 for t in self.regions])
             is_not_alaska = all([t.find('AK') == -1 for t in self.regions])
@@ -102,6 +124,21 @@ class VyperCore:
             raise ValueError('No regions specified, unable to determine is_alaska')
 
     def _build_datum_from_string(self, datum: str):
+        """
+        We build a CRS for the input and output datum.  You can pass in a prebuilt VerticalPipelineCRS, or use this
+        method to build one automatically.
+
+        Parameters
+        ----------
+        datum
+            string identifier for datum, see pipeline.datum_definition keys for possible options
+
+        Returns
+        -------
+        VerticalPipelineCRS
+            constructed CRS for the datum provided
+        """
+
         if self.regions:
             new_crs = VerticalPipelineCRS(datum)
             base_region = self.regions[0]
@@ -114,18 +151,35 @@ class VyperCore:
 
     def _transform_to_nad83(self, source_epsg: int, x: np.array, y: np.array, z: np.array = None):
         """
-        
+        NAD83 is our pivot datum in vyperdatum.  In order to do a vertical transform, we need to first get to NAD83
+        if we aren't there already.  We assume that if you are not at NAD83, you are providing an integer EPSG code,
+        which triggers this method.
+
+        Here we use the Transformer object to do a 3d (if EPSG is 3d coordinate system) or 2d transformation to
+        6319, which is 3d NAD83 (2011).  If the transformation is 3d, you'll get a z value which is the sep between
+        source and 6319.  Otherwise z will be unchanged.
+
         Parameters
         ----------
         source_epsg
+            The coordinate system of the input data, as EPSG
         x
+            longitude/easting of the input data
         y
+            latitude/northing of the input data
         z
+            depth value of the input data
 
         Returns
         -------
-
+        x
+            longitude/easting of the input data, transformed to NAD83(2011)
+        y
+            latitude/northing of the input data, transformed to NAD83(2011)
+        z
+            depth value of the input data, transformed to NAD83(2011)
         """
+
         in_crs = CRS.from_epsg(source_epsg)
         out_crs = CRS.from_epsg(6319)
         # Transformer.transform input order is based on the CRS, see CRS.geodetic_crs.axis_info
@@ -140,6 +194,16 @@ class VyperCore:
         return x, y, z
 
     def set_input_datum(self, input_datum: Union[str, int]):
+        """
+        Construct the input datum, using the provided identifier.  If EPSG (int) is provided, will store the source
+        in self.transformed_from to do a 3d/2d transformation later and assume that the input datum will be at NAD83.
+
+        Parameters
+        ----------
+        input_datum
+            Either EPSG code, or datum identifier string, see pipeline.datum_definition keys for possible options for string
+        """
+
         if isinstance(input_datum, int):
             self.transformed_from = input_datum
             input_datum = 'NAD83'
@@ -151,6 +215,14 @@ class VyperCore:
         self.in_crs = incrs
 
     def set_output_datum(self, output_datum: str):
+        """
+        Construct the output datum, using the provided identifier.
+
+        Parameters
+        ----------
+        output_datum
+            datum identifier string, see pipeline.datum_definition keys for possible options for string
+        """
         try:
             outcrs = VerticalPipelineCRS()
             outcrs.from_wkt(output_datum)
@@ -159,6 +231,26 @@ class VyperCore:
         self.out_crs = outcrs
 
     def _run_pipeline(self, x, y, pipeline, z=None):
+        """
+        Helper method for running the transformer pipeline operation on the provided data.
+
+        Parameters
+        ----------
+        x
+            longitude of the input data
+        y
+            latitude of the input data
+        pipeline
+            string containing the pipeline information
+        z
+            optional, depth value of the input data, if not provided will use all zeros
+
+        Returns
+        -------
+        tuple
+            tuple of transformed x, y, z
+        """
+
         if z is None:
             z = np.zeros(len(x))
         assert len(x) == len(y) and len(y) == len(z)
@@ -205,7 +297,35 @@ class VyperCore:
             raise ValueError('Unable to find either geoid12b or xgeoid18b in the output datum pipeline, which geoid is used?')
         return final_uncertainty
 
-    def transform_dataset(self, x: np.array, y: np.array, z: np.array = None, include_vdatum_uncertainty: bool = True):
+    def transform_dataset(self, x: np.array, y: np.array, z: np.array = None, include_vdatum_uncertainty: bool = True,
+                          include_region_index: bool = False):
+        """
+        Transform all points provided here for each vdatum grid file that overlaps the overall extents of the input data.
+
+        If an EPSG code was provided to set_input_datum, does an optional 2d/3d transformation to NAD83(2011).
+
+        Parameters
+        ----------
+        x
+            longitude of the input data
+        y
+            latitude of the input data
+        z
+            optional, depth value of the input data, if not provided will use all zeros include_vdatum_uncertainty
+        include_vdatum_uncertainty
+            if True, will return the combined separation uncertainty for each point
+        include_region_index
+            if True, will return the integer index of the region used for each point
+
+        Returns
+        -------
+        tuple
+            contains: transformed x value (if EPSG code is provided, else original x value),
+                      transformed y value (if EPSG code is provided, else original y value),
+                      transformed z value,
+                      combined uncertainty for each vdatum layer if include_vdatum_uncertainty, otherwise None,
+                      region index for each vdatum layer if include_region_index, otherwise None
+        """
         if self.regions:
             if self.transformed_from:
                 x, y, z = self._transform_to_nad83(self.transformed_from, x, y, z)
@@ -218,9 +338,14 @@ class VyperCore:
                 ans_unc = np.full_like(z, np.nan)
             else:
                 ans_unc = None
-            for region in self.regions:
+            if include_region_index:
+                ans_region = np.full(z.shape, -1, dtype=np.int8)
+            else:
+                ans_region = None
+
+            for cnt, region in enumerate(self.regions):
                 # get the pipeline
-                pipeline = get_transformation_pipeline(self.in_crs, self.out_crs, region)
+                pipeline = get_transformation_pipeline(self.in_crs, self.out_crs, region, self.is_alaska())
                 tmp_x, tmp_y, tmp_z = self._run_pipeline(x, y, pipeline, z=z)
 
                 # areas outside the coverage of the vert shift are inf
@@ -230,7 +355,9 @@ class VyperCore:
                 ans_z[valid_index] = tmp_z[valid_index]
                 if include_vdatum_uncertainty:
                     ans_unc[valid_index] = self._get_output_uncertainty(region)
-            return ans_x, ans_y, np.round(ans_z, 3), ans_unc
+                if include_region_index:
+                    ans_region[valid_index] = cnt
+            return ans_x, ans_y, np.round(ans_z, 3), ans_unc, ans_region
         else:
             raise ValueError('No regions specified, unable to transform points')
 
