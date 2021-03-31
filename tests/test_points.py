@@ -12,18 +12,73 @@ def test_points_setup():
 
 def test_transform_dataset():
     vp = VyperPoints()
-    x = np.array([-75.79180, -75.79190, -75.79200])
-    y = np.array([36.01570, 36.01560, 36.01550])
+    x = np.array([-76.19698, -76.194, -76.198])
+    y = np.array([37.1299, 37.1399, 37.1499])
     z = np.array([10.5, 11.0, 11.5])
     vp.transform_points('nad83', 'mllw', x, y, z=z, include_vdatum_uncertainty=False)
 
     assert (x == vp.x).all()
     assert (y == vp.y).all()
-    assert (vp.z == np.array([49.490, 49.990, 50.490])).all()
+    assert (vp.z == np.array([47.505, 47.987, 48.454])).all()
 
     assert vp.out_crs.to_wkt() == 'VERTCRS["mllw",VDATUM["mllw"],' \
                                   'CS[vertical,1],AXIS["gravity-related height (H)",up],LENGTHUNIT["metre",1],' \
-                                  'REMARK["regions=[NCinner11_8301],' \
+                                  'REMARK["regions=[MDVAchb12_8301],' \
                                   'pipeline=proj=pipeline step proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx ' \
-                                  'step proj=vgridshift grids=NCinner11_8301\\tss.gtx ' \
-                                  'step proj=vgridshift grids=NCinner11_8301\\mllw.gtx"]]'
+                                  'step proj=vgridshift grids=REGION\\tss.gtx ' \
+                                  'step proj=vgridshift grids=REGION\\mllw.gtx"]]'
+
+
+def test_transform_dataset_mhw():
+    vp = VyperPoints()
+    x = np.array([-76.19698, -76.194, -76.198])
+    y = np.array([37.1299, 37.1399, 37.1499])
+    z = np.array([10.5, 11.0, 11.5])
+    vp.transform_points('noaa chart height', 'noaa chart datum', x, y, z=z, include_vdatum_uncertainty=False)
+
+    assert (x == vp.x).all()
+    assert (y == vp.y).all()
+    assert (vp.z == np.array([11.227, 11.724, 12.218])).all()
+
+    assert vp.out_crs.to_wkt() == 'VERTCRS["noaa chart datum",VDATUM["noaa chart datum"],' \
+                                  'CS[vertical,1],AXIS["gravity-related height (H)",up],LENGTHUNIT["metre",1],' \
+                                  'REMARK["regions=[MDVAchb12_8301],' \
+                                  'pipeline=proj=pipeline step proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx ' \
+                                  'step proj=vgridshift grids=REGION\\tss.gtx ' \
+                                  'step proj=vgridshift grids=REGION\\mllw.gtx"]]'
+
+
+def test_transform_dataset_geoid():
+    vp = VyperPoints()
+    x = np.array([-76.19698, -76.194, -76.198])
+    y = np.array([37.1299, 37.1399, 37.1499])
+    z = np.array([10.5, 11.0, 11.5])
+    vp.transform_points('navd88', 'noaa chart datum', x, y, z=z, include_vdatum_uncertainty=False)
+
+    assert (x == vp.x).all()
+    assert (y == vp.y).all()
+    assert (vp.z == np.array([10.765, 11.262, 11.758])).all()
+
+    assert vp.out_crs.to_wkt() == 'VERTCRS["noaa chart datum",VDATUM["noaa chart datum"],' \
+                                  'CS[vertical,1],AXIS["gravity-related height (H)",up],LENGTHUNIT["metre",1],' \
+                                  'REMARK["regions=[MDVAchb12_8301],' \
+                                  'pipeline=proj=pipeline step proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx ' \
+                                  'step proj=vgridshift grids=REGION\\tss.gtx ' \
+                                  'step proj=vgridshift grids=REGION\\mllw.gtx"]]'
+
+
+def test_transform_dataset_inv_geoid():
+    vp = VyperPoints()
+    x = np.array([-76.19698, -76.194, -76.198])
+    y = np.array([37.1299, 37.1399, 37.1499])
+    z = np.array([10.765, 11.262, 11.758])
+    vp.transform_points('noaa chart datum', 'navd88', x, y, z=z, include_vdatum_uncertainty=False)
+
+    assert (x == vp.x).all()
+    assert (y == vp.y).all()
+    assert (vp.z == np.array([10.5, 11.0, 11.5])).all()
+
+    assert vp.out_crs.to_wkt() == 'VERTCRS["navd88",VDATUM["navd88"],' \
+                                  'CS[vertical,1],AXIS["gravity-related height (H)",up],LENGTHUNIT["metre",1],' \
+                                  'REMARK["regions=[MDVAchb12_8301],' \
+                                  'pipeline=proj=pipeline step proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx"]]'

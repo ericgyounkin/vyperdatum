@@ -6,17 +6,19 @@ from pyproj import Transformer, CRS
 
 
 from vyperdatum.core import VyperCore
-from vyperdatum.vypercrs import VerticalPipelineCRS
 
 
 class VyperRaster(VyperCore):
     """
-    Transform raster methods
+    Using VyperCore, read from a raster and perform a vertical transformation of the data to a vdatum supported
+    vertical datum CRS, optionally writing to geotiff.
     """
 
-    def __init__(self, input_file: str = None, vdatum_directory: str = None):
-        super().__init__(vdatum_directory)
+    def __init__(self, input_file: str = None, is_height: bool = True, vdatum_directory: str = None, logfile: str = None):
+        super().__init__(vdatum_directory, logfile)
         self.input_file = input_file
+        self.is_height = is_height
+        self.input_wkt = None
         self.geotransform = None
         self.min_x = None
         self.min_y = None
@@ -43,6 +45,21 @@ class VyperRaster(VyperCore):
         if input_file:
             self.initialize()
 
+    @property
+    def is_covered(self):
+        """
+        Data is completely covered by the found VDatum regions
+
+        Returns
+        -------
+        bool
+            Returns true if data is completely covered by VDatum
+        """
+
+        if self.raster_vdatum_sep is None:
+            self.log_error('No separation grid found, make sure you run get_datum_sep first', ValueError)
+        return np.count_nonzero(np.isnan(self.raster_vdatum_sep)) == 0
+
     def initialize(self, input_file: str = None):
         """
         Get all the data we need from the input raster.  This is run automatically on instancing this class, if an input
@@ -59,8 +76,9 @@ class VyperRaster(VyperCore):
 
         ofile = gdal.Open(self.input_file)
         if not ofile:
-            raise ValueError(f'Unable to open {self.input_file} with gdal')
+            self.log_error(f'Unable to open {self.input_file} with gdal', ValueError)
 
+        self.log_info(f'Operating on {self.input_file}')
         self.layers = [ofile.GetRasterBand(i + 1).ReadAsArray() for i in range(ofile.RasterCount)]
         self.nodatavalue = [ofile.GetRasterBand(i + 1).GetNoDataValue() for i in range(ofile.RasterCount)]
         self.layernames = [ofile.GetRasterBand(i + 1).GetDescription() for i in range(ofile.RasterCount)]
@@ -79,8 +97,16 @@ class VyperRaster(VyperCore):
 
         # if this is a raster with a vyperdatum crs, try to automatically build the input crs
         input_crs = ofile.GetSpatialRef()
+        self.input_wkt = input_crs.ExportToWkt()
+
+        # deprecated EPSG encoding
         if input_crs.GetAttrValue('AUTHORITY') == 'EPSG':
             epsg = input_crs.GetAttrValue('AUTHORITY', 1)
+            if epsg:
+                self.set_input_datum(int(epsg))
+        # new one
+        elif input_crs.GetAttrValue('ID') == 'EPSG':
+            epsg = input_crs.GetAttrValue('ID', 1)
             if epsg:
                 self.set_input_datum(int(epsg))
         ofile = None
@@ -101,7 +127,7 @@ class VyperRaster(VyperCore):
             depth_idx = check_layer_names.index('elevation')
         else:
             depth_idx = -1
-            print(f'Unable to find depth or elevation layer by name, layers={check_layer_names}')
+            self.log_warning(f'Unable to find depth or elevation layer by name, layers={check_layer_names}')
         return depth_idx
 
     def _get_uncertainty_layer_index(self):
@@ -120,7 +146,7 @@ class VyperRaster(VyperCore):
             unc_idx = check_layer_names.index('vertical uncertainty')
         else:
             unc_idx = -1
-            print(f'Unable to find uncertainty or vertical uncertainty layer by name, layers={check_layer_names}')
+            self.log_warning(f'Unable to find uncertainty or vertical uncertainty layer by name, layers={check_layer_names}')
         return unc_idx
 
     def _get_contributor_layer_index(self):
@@ -137,10 +163,10 @@ class VyperRaster(VyperCore):
             cont_idx = check_layer_names.index('contributor')
         else:
             cont_idx = -1
-            print(f'Unable to find contributor layer by name, layers={check_layer_names}')
+            self.log_warning(f'Unable to find contributor layer by name, layers={check_layer_names}')
         return cont_idx
 
-    def set_input_datum(self, input_datum: int):
+    def set_input_datum(self, input_datum: int, vertical: str = None):
         """
         An additional task is run on setting the input datum.  We first need to determine the nad83 geographic coordinates
         to determine which vdatum regions apply (set_region_by_bounds).  Afterwards we call the vypercore set_input_datum
@@ -153,10 +179,14 @@ class VyperRaster(VyperCore):
         ----------
         input_datum
             EPSG code for the input datum of the raster
+        vertical
+            Optional, if the user enters a 2d epsg for input datum, we assume the input vertical datum is NAD83 elheight.
+            Use this to force a vertical datum other than ellipsoid height, see pipeline.datum_definition keys for possible
+            options for string
         """
 
         if not self.min_x or not self.min_y or not self.max_x or not self.max_y:
-            raise ValueError('You must initialize first, before setting input datum, as we transform the extents here')
+            self.log_error('You must initialize first, before setting input datum, as we transform the extents here', ValueError)
 
         # epsg which lets us transform, otherwise assume raster extents are geographic
         # transform the raster extents so we can use them to find the vdatum regions
@@ -166,10 +196,15 @@ class VyperRaster(VyperCore):
         self.set_region_by_bounds(self.geographic_min_x, self.geographic_min_y, self.geographic_max_x, self.geographic_max_y)
 
         # run the core process
-        super().set_input_datum(input_datum)
+        super().set_input_datum(input_datum, vertical)
+        # pass the input wkt from the raster to the crs object
+        self.in_crs.horiz_wkt = self.input_wkt
+
+    def set_output_datum(self, output_datum: str):
+        super().set_output_datum(output_datum)
+        self.out_crs.horiz_wkt = self.input_wkt
 
     def get_datum_sep(self, sampling_distance: float, include_region_index: bool = False):
-
         """
         Use the provided raster and pipeline to get the separation over the raster area.
 
@@ -182,11 +217,11 @@ class VyperRaster(VyperCore):
         """
 
         if self.regions is None:
-            raise ValueError('Initialization must have failed, re-initialize with a new gdal supported file')
+            self.log_error('Initialization must have failed, re-initialize with a new gdal supported file', ValueError)
         if not self.in_crs:
-            raise ValueError('Input datum must be set with the set_input_datum method before operation')
+            self.log_error('Input datum must be set with the set_input_datum method before operation', ValueError)
         if not self.out_crs:
-            raise ValueError('Output datum must be set with the set_output_datum method before operation')
+            self.log_error('Output datum must be set with the set_output_datum method before operation', ValueError)
 
         xx_sampled, yy_sampled, x_range, y_range = sample_array(self.min_x, self.max_x, self.min_y, self.max_y, sampling_distance)
         # get sep value across all regions for all grid cells at sampling distance
@@ -196,12 +231,12 @@ class VyperRaster(VyperCore):
         # ignore the geographic return from transform, keep on with the raster coordinates
         valid_count = np.count_nonzero(sep)
         invalid_count = sep.size - valid_count
-        print(f'Found {valid_count} valid cells at {sampling_distance} m spacing, unable to determine sep value for '
-              f'{invalid_count} cells')
+        self.log_info(f'Found {valid_count} valid cells at {sampling_distance} m spacing, unable to determine sep value for '
+                      f'{invalid_count} cells')
 
         # get grids of equal size to the raster layers we are transforming
         if self.resolution_x != self.resolution_y:
-            raise NotImplementedError('get_datum_sep: This currently only works when resx and resy are the same')
+            self.log_error('get_datum_sep: This currently only works when resx and resy are the same', NotImplementedError)
         raster_sep_x, raster_sep_y, _, _ = sample_array(self.min_x, self.max_x, self.min_y, self.max_y, self.resolution_x,
                                                         center=False)
         # bin the raster cell locations to get which sep value applies
@@ -241,15 +276,15 @@ class VyperRaster(VyperCore):
         """
 
         if self.raster_vdatum_sep is None:
-            raise ValueError('Unable to find sep model, make sure you run get_datum_sep first')
+            self.log_error('Unable to find sep model, make sure you run get_datum_sep first', ValueError)
         elevation_layer_idx = self._get_elevation_layer_index()
         uncertainty_layer_idx = self._get_uncertainty_layer_index()
         contributor_layer_idx = self._get_contributor_layer_index()
 
         if elevation_layer_idx == -1:
-            raise ValueError('Unable to find elevation layer')
+            self.log_error('Unable to find elevation layer', ValueError)
         if uncertainty_layer_idx == -1:
-            print('Unable to find uncertainty layer, uncertainty will be entirely based off of vdatum sep model')
+            self.log_info('Unable to find uncertainty layer, uncertainty will be entirely based off of vdatum sep model')
 
         elevation_layer = self.layers[elevation_layer_idx]
         layernames = [self.layernames[elevation_layer_idx]]
@@ -271,22 +306,27 @@ class VyperRaster(VyperCore):
         missing_idx = np.isnan(self.raster_vdatum_sep)
         missing_count = np.count_nonzero(missing_idx)
         missing_idx = np.where(missing_idx)
-        print(f'Applying vdatum separation model to {self.raster_vdatum_sep.size} total points')
+        self.log_info(f'Applying vdatum separation model to {self.raster_vdatum_sep.size} total points')
 
-        final_elevation_layer = elevation_layer - self.raster_vdatum_sep
-        if uncertainty_layer:
+        if self.is_height:
+            final_elevation_layer = -elevation_layer - self.raster_vdatum_sep
+        else:
+            final_elevation_layer = elevation_layer - self.raster_vdatum_sep
+
+        if uncertainty_layer_idx:
             final_uncertainty_layer = uncertainty_layer + self.raster_vdatum_uncertainty
         else:
             final_uncertainty_layer = self.raster_vdatum_uncertainty
 
         if not allow_points_outside_coverage:
-            print(f'applying nodatavalue to {missing_count} points that are outside of vdatum coverage')
+            self.log_info(f'applying nodatavalue to {missing_count} points that are outside of vdatum coverage')
             final_elevation_layer[missing_idx] = self.nodatavalue[elevation_layer_idx]
             final_uncertainty_layer[missing_idx] = self.nodatavalue[uncertainty_layer_idx]
             if contributor_layer:
                 contributor_layer[missing_idx] = self.nodatavalue[contributor_layer_idx]
         else:
-            print(f'Allowing {missing_count} points that are outside of vdatum coverage, using CATZOC D vertical uncertainty')
+            self.log_info(f'Allowing {missing_count} points that are outside of vdatum coverage, using CATZOC D vertical uncertainty')
+            final_elevation_layer[missing_idx] = elevation_layer[missing_idx]
             z_values = final_elevation_layer[missing_idx]
             u_values = 3 - 0.06 * z_values
             u_values[np.where(z_values > 0)] = 3.0
@@ -295,25 +335,29 @@ class VyperRaster(VyperCore):
         layers = (final_elevation_layer, final_uncertainty_layer, contributor_layer)
         return layers, layernames, layernodata
 
-    def transform_raster(self, input_datum: int, output_datum: str, sampling_distance: float,
+    def transform_raster(self, output_datum: str, sampling_distance: float, input_datum: int = None,
                          include_region_index: bool = False, allow_points_outside_coverage: bool = False,
-                         output_file: str = None):
+                         force_input_vertical_datum: str = None, output_file: str = None):
         """
         Main method of this class, contains all the other methods and allows you to transform the source raster to a
         different vertical datum using VDatum.
 
         Parameters
         ----------
-        input_datum
-            EPSG code for the datum of the source raster, only necessary if the EPSG is not encoded in the source SpatialReference
         output_datum
             datum identifier string, see pipeline.datum_definition keys for possible options for string
         sampling_distance
             interval in meters that you want to sample the raster coordinates to get the sep value
+        input_datum
+            optional, EPSG code for the datum of the source raster, only necessary if the EPSG is not encoded in the source SpatialReference
         include_region_index
             if True, will return the integer index of the region used for each point
         allow_points_outside_coverage
             if True, allows through points outside of vdatum coverage
+        force_input_vertical_datum
+            Optional, if the user enters a 2d epsg for input datum, we assume the input vertical datum is NAD83 elheight.
+            Use this to force a vertical datum other than ellipsoid height, see pipeline.datum_definition keys for possible
+            options for string
         output_file
             if provided, writes the new raster to geotiff
 
@@ -327,28 +371,33 @@ class VyperRaster(VyperCore):
             tuple of layer nodata value for each layer in returned layers
         """
 
-        if input_datum:
+        if input_datum and force_input_vertical_datum:
+            self.set_input_datum(input_datum, force_input_vertical_datum)
+        elif input_datum:
             self.set_input_datum(input_datum)
+        elif force_input_vertical_datum:
+            self.in_crs = self._build_datum_from_string(force_input_vertical_datum)
+
         if output_datum:
             self.set_output_datum(output_datum)
 
         if self.regions is None:
-            raise ValueError(f'Unable to find regions for raster using ({self.geographic_min_x},{self.geographic_min_y}), '
-                             f'({self.geographic_max_x},{self.geographic_max_y})')
+            self.log_error(f'Unable to find regions for raster using ({self.geographic_min_x},{self.geographic_min_y}), '
+                           f'({self.geographic_max_x},{self.geographic_max_y})', ValueError)
 
         start_cnt = perf_counter()
-        print(f'Begin work on {os.path.basename(self.input_file)}')
+        self.log_info(f'Begin work on {os.path.basename(self.input_file)}')
         self.get_datum_sep(sampling_distance, include_region_index=include_region_index)
         layers, layernames, layernodata = self.apply_sep(allow_points_outside_coverage=allow_points_outside_coverage)
         if output_file:
             if layernodata[2]:  # contributor
-                tiffdata = np.c_[layers[0], layers[1], layers[2]]
+                tiffdata = np.concatenate([layers[0][None, :, :], layers[1][None, :, :], layers[2][None, :, :]])
             else:
-                tiffdata = np.c_[layers[0], layers[1]]
+                tiffdata = np.concatenate([layers[0][None, :, :], layers[1][None, :, :]])
             tiffdata = np.round(tiffdata, 3)
             self._write_gdal_geotiff(output_file, tiffdata, layernames, layernodata)
         end_cnt = perf_counter()
-        print(f'Raster transformation complete: Elapsed time {end_cnt - start_cnt} seconds')
+        self.log_info(f'Raster transformation complete: Elapsed time {end_cnt - start_cnt} seconds')
         return layers, layernames, layernodata
         
     def _write_gdal_geotiff(self, outfile: str, data: tuple, band_names: tuple, nodatavalue: tuple):
@@ -377,7 +426,7 @@ class VyperRaster(VyperCore):
             outband.SetDescription(band_names[lyr_num])
             outband.WriteArray(data[lyr_num])
             outband = None
-        out_raster.SetProjection(self.out_crs.to_wkt())
+        out_raster.SetProjection(self.out_crs.to_compound_wkt())
         out_raster = None
 
 

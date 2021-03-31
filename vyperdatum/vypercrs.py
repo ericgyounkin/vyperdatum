@@ -482,9 +482,10 @@ class VerticalPipelineCRS(VerticalCRS):
     """
 
     def __init__(self, datum_name: str = '', coordinate_type: str = 'vertical',
-                 coordinate_axis: tuple = ('height',), coordinate_units: str = 'm'):
+                 coordinate_axis: tuple = ('height',), coordinate_units: str = 'm', horiz_wkt: str = None):
 
         super().__init__()
+        self.horiz_wkt = horiz_wkt
         self.datum_name = datum_name
         self.coordinate_type = coordinate_type
         self.coordinate_axis = coordinate_axis
@@ -495,6 +496,8 @@ class VerticalPipelineCRS(VerticalCRS):
 
     def add_pipeline(self, pipeline: str, region: str):
         self.regions.append(region)
+        # remove region name from the pipeline, replace with 'REGION' keyword
+        pipeline = pipeline.replace(region, 'REGION')
         if self.pipeline_string and self.pipeline_string != pipeline:
             raise ValueError(f'New pipeline provided does not match the existing pipeline in this CRS: {self.pipeline_string}')
         self.pipeline_string = pipeline
@@ -532,12 +535,26 @@ class VerticalPipelineCRS(VerticalCRS):
         wktstr += f'  {self.build_remarks()}]'
         return wktstr
 
+    def to_compound_wkt(self):
+        """
+        Must have a compound CRS to use GDAL to save data to geoTiff
+        """
+        horiz_wkt = self.horiz_wkt
+        if self.horiz_wkt is None:
+            raise ValueError('No horizontal coordinate system set, this is generally done on loading new raster dataset')
+        # wkt should always start with keyword like PROJCS["NAD83 / UTM zone 19N"
+        horiz_wkt_name = horiz_wkt.split('"')[1]
+        vert_wkt = self.to_wkt()
+        wktstr = f'COMPOUNDCRS["{horiz_wkt_name} + {self.datum_name}",'
+        wktstr += f'{horiz_wkt},'
+        wktstr += f'{vert_wkt}]'
+        return wktstr
+
     def to_crs(self):
         return CRS.from_wkt(self.to_wkt())
 
-
-def _diff_two_lists(listone, listtwo):
-    return list(set(listone) - set(listtwo)) + list(set(listtwo) - set(listone))
+    def to_compound_crs(self):
+        return CRS.from_wkt(self.to_compound_wkt())
 
 
 def get_transformation_pipeline(in_crs: VerticalPipelineCRS, out_crs: VerticalPipelineCRS, region: str, is_alaska: bool = False):
@@ -556,7 +573,7 @@ def get_transformation_pipeline(in_crs: VerticalPipelineCRS, out_crs: VerticalPi
     region
         name of the vdatum folder for the region of interest, ex: NYNJhbr34_8301
     is_alaska
-        # if True, regions are in alaska, which means we need to do a string replace to go to xgeoid18b
+        # if True, regions are in alaska, which means we need to do a string replace to go to xgeoid17b
 
     Returns
     -------

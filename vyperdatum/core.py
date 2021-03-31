@@ -3,6 +3,8 @@ import numpy as np
 from pyproj import Transformer, datadir, CRS
 from osgeo import gdal, ogr
 from typing import Any, Union
+import logging
+from datetime import datetime
 
 from vyperdatum.vypercrs import VerticalPipelineCRS, get_transformation_pipeline
 from vyperdatum.pipeline import get_regional_pipeline
@@ -32,15 +34,35 @@ class VyperCore:
 
     """
 
-    def __init__(self, vdatum_directory: str = None):
+    def __init__(self, vdatum_directory: str = None, logfile: str = None):
         # if vdatum_directory is provided initialize VdatumData with that path
         self.vdatum = VdatumData(vdatum_directory=vdatum_directory)
 
         self.in_crs = None
         self.out_crs = None
-        self.transformed_from = None
+        self.base_horiz_crs = None
 
+        self.logger = return_logger(logfile)
         self.regions = []
+
+    def log_error(self, msg, exception=None):
+        self.logger.error(msg)
+        if exception:
+            raise exception(msg)
+
+    def log_warning(self, msg):
+        self.logger.warning(msg)
+
+    def log_info(self, msg):
+        self.logger.info(msg)
+
+    def log_debug(self, msg):
+        self.logger.debug(msg)
+
+    def close(self):
+        for handler in self.logger.handlers:
+            handler.close()
+            self.logger.removeHandler(handler)
 
     def set_region_by_bounds(self, x_min: float, y_min: float, x_max: float, y_max: float):
         """
@@ -115,13 +137,13 @@ class VyperCore:
             is_alaska = all([t.find('AK') != -1 for t in self.regions])
             is_not_alaska = all([t.find('AK') == -1 for t in self.regions])
             if not is_alaska and not is_not_alaska:
-                raise NotImplementedError('Regions in and not in alaska specified, not currently supported')
+                self.log_error('Regions in and not in alaska specified, not currently supported', NotImplementedError)
             if is_alaska:
                 return True
             else:
                 return False
         else:
-            raise ValueError('No regions specified, unable to determine is_alaska')
+            self.log_error('No regions specified, unable to determine is_alaska', ValueError)
 
     def _build_datum_from_string(self, datum: str):
         """
@@ -141,13 +163,13 @@ class VyperCore:
 
         if self.regions:
             new_crs = VerticalPipelineCRS(datum)
-            base_region = self.regions[0]
-            base_pipeline = get_regional_pipeline('nad83', datum, base_region, is_alaska=self.is_alaska())
             for r in self.regions:
-                new_crs.add_pipeline(base_pipeline, r)
+                new_pipeline = get_regional_pipeline('nad83', datum, r, is_alaska=self.is_alaska())
+                if new_pipeline:
+                    new_crs.add_pipeline(new_pipeline, r)
             return new_crs
         else:
-            raise ValueError('No regions specified, unable to construct new vyperdatum crs')
+            self.log_error('No regions specified, unable to construct new vyperdatum crs', ValueError)
 
     def _transform_to_nad83(self, source_epsg: int, x: np.array, y: np.array, z: np.array = None):
         """
@@ -193,20 +215,30 @@ class VyperCore:
         x, y, z = transformer.transform(x, y, z)
         return x, y, z
 
-    def set_input_datum(self, input_datum: Union[str, int]):
+    def set_input_datum(self, input_datum: Union[str, int], vertical: str = None):
         """
         Construct the input datum, using the provided identifier.  If EPSG (int) is provided, will store the source
-        in self.transformed_from to do a 3d/2d transformation later and assume that the input datum will be at NAD83.
+        in self.base_horiz_crs to do a 3d/2d transformation later and assume that the input datum will be at NAD83,
+        unless you use vertical='mllw' for example.
 
         Parameters
         ----------
         input_datum
             Either EPSG code, or datum identifier string, see pipeline.datum_definition keys for possible options for string
+        vertical
+            Optional, if the user enters a 2d epsg for input datum, we assume the input vertical datum is NAD83 elheight.
+            Use this to force a vertical datum other than ellipsoid height, see pipeline.datum_definition keys for possible
+            options for string
         """
 
         if isinstance(input_datum, int):
-            self.transformed_from = input_datum
-            input_datum = 'NAD83'
+            self.base_horiz_crs = input_datum
+            if vertical:
+                input_datum = vertical
+            else:
+                input_datum = 'NAD83'
+        else:
+            self.base_horiz_crs = None
         try:
             incrs = VerticalPipelineCRS()
             incrs.from_wkt(input_datum)
@@ -294,7 +326,7 @@ class VyperCore:
         elif self.out_crs.pipeline_string.find('xgeoid18b') != -1:
             final_uncertainty += self.vdatum.uncertainties['xgeoid18b']
         else:
-            raise ValueError('Unable to find either geoid12b or xgeoid18b in the output datum pipeline, which geoid is used?')
+            self.log_error('Unable to find either geoid12b or xgeoid18b in the output datum pipeline, which geoid is used?', ValueError)
         return final_uncertainty
 
     def transform_dataset(self, x: np.array, y: np.array, z: np.array = None, include_vdatum_uncertainty: bool = True,
@@ -327,8 +359,8 @@ class VyperCore:
                       region index for each vdatum layer if include_region_index, otherwise None
         """
         if self.regions:
-            if self.transformed_from:
-                x, y, z = self._transform_to_nad83(self.transformed_from, x, y, z)
+            if self.base_horiz_crs:
+                x, y, z = self._transform_to_nad83(self.base_horiz_crs, x, y, z)
             ans_x = np.full_like(x, np.nan)
             ans_y = np.full_like(y, np.nan)
             if z is None:
@@ -357,9 +389,10 @@ class VyperCore:
                     ans_unc[valid_index] = self._get_output_uncertainty(region)
                 if include_region_index:
                     ans_region[valid_index] = cnt
+            self.log_info(f'transformed {len(ans_z)} points from {self.in_crs.datum_name} to {self.out_crs.datum_name}')
             return ans_x, ans_y, np.round(ans_z, 3), ans_unc, ans_region
         else:
-            raise ValueError('No regions specified, unable to transform points')
+            self.log_error('No regions specified, unable to transform points', ValueError)
 
 
 class VdatumData:
@@ -605,3 +638,67 @@ def get_vdatum_uncertainties(vdatum_directory: str):
                             else:
                                 print(f'No match for vdatum_sigma entry {data_entry}!')
     return grid_dict
+
+
+class StdErrFilter(logging.Filter):
+    """
+    filter out messages that are not CRITICAL or ERROR or WARNING
+    """
+    def filter(self, rec):
+        return rec.levelno in (logging.CRITICAL, logging.ERROR, logging.WARNING)
+
+
+class StdOutFilter(logging.Filter):
+    """
+    filter out messages that are not DEBUG or INFO
+    """
+    def filter(self, rec):
+        return rec.levelno in (logging.DEBUG, logging.INFO)
+
+
+def return_logger(logfile: str = None):
+    """
+    I disable the root logger by clearing out it's handlers because it always gets a default stderr log handler that
+    ends up duplicating messages.  Since I want the stderr messages formatted nicely, I want to setup that handler \
+    myself.
+
+    Parameters
+    ----------
+    logfile: str, path to the log file where you want the output driven to
+
+    Returns
+    -------
+    logger: logging.Logger instance for the provided name/logfile
+
+    """
+    fmat = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    if logfile:
+        logger = logging.getLogger(logfile)
+    else:
+        nowtime = datetime.now().strftime('%Y%m%d_%H%M%S')
+        logger = logging.getLogger(f'vyperdatum_{nowtime}')
+    logger.setLevel(logging.INFO)
+
+    consolelogger = logging.StreamHandler(sys.stdout)
+    consolelogger.setLevel(logging.INFO)
+    #consolelogger.setFormatter(logging.Formatter(fmat))
+    consolelogger.addFilter(StdOutFilter())
+
+    errorlogger = logging.StreamHandler(sys.stderr)
+    errorlogger.setLevel(logging.WARNING)
+    #errorlogger.setFormatter(logging.Formatter(fmat))
+    errorlogger.addFilter(StdErrFilter())
+
+    logger.addHandler(consolelogger)
+    logger.addHandler(errorlogger)
+
+    if logfile is not None:
+        filelogger = logging.FileHandler(logfile)
+        filelogger.setLevel(logging.INFO)
+        filelogger.setFormatter(logging.Formatter(fmat))
+        logger.addHandler(filelogger)
+
+    # eliminate the root logger handlers, it will have a default stderr pointing handler that ends up duplicating all the logs to console
+    logging.getLogger().handlers = []
+
+    return logger

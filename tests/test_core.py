@@ -3,6 +3,9 @@ from pytest import approx
 from vyperdatum.core import *
 
 
+data_folder = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
+
+
 def test_core_setup():
     # these tests assume you have the vdatum path setup in VyperCore
     # first time, you need to run it with the path to the vdatum folder, vc = VyperCore('path\to\vdatum')
@@ -44,8 +47,8 @@ def test_set_input_datum():
 
     assert vc.in_crs.datum_name == 'mllw'
     assert vc.in_crs.pipeline_string == 'proj=pipeline step proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx ' \
-                                        'step proj=vgridshift grids=NCcoast11_8301\\tss.gtx ' \
-                                        'step proj=vgridshift grids=NCcoast11_8301\\mllw.gtx'
+                                        'step proj=vgridshift grids=REGION\\tss.gtx ' \
+                                        'step proj=vgridshift grids=REGION\\mllw.gtx'
     assert vc.in_crs.regions == ['NCcoast11_8301', 'NCinner11_8301']
 
 
@@ -77,8 +80,8 @@ def test_transform_dataset():
                                   'CS[vertical,1],AXIS["gravity-related height (H)",up],LENGTHUNIT["metre",1],' \
                                   'REMARK["regions=[NCcoast11_8301,NCinner11_8301],' \
                                   'pipeline=proj=pipeline step proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx ' \
-                                  'step proj=vgridshift grids=NCcoast11_8301\\tss.gtx ' \
-                                  'step proj=vgridshift grids=NCcoast11_8301\\mllw.gtx"]]'
+                                  'step proj=vgridshift grids=REGION\\tss.gtx ' \
+                                  'step proj=vgridshift grids=REGION\\mllw.gtx"]]'
 
 
 def test_transform_dataset_alaska():
@@ -91,16 +94,15 @@ def test_transform_dataset_alaska():
     z = np.array([10.5, 11.0, 11.5])
     newx, newy, newz, _, _ = vc.transform_dataset(x, y, z, include_vdatum_uncertainty=False)
 
-    assert (x == newx).all()
-    assert (y == newy).all()
-    assert (newz == np.array([49.490, 49.990, 50.490])).all()
+    assert approx(x == newx, 0.01)
+    assert approx(y == newy, 0.01)
+    assert approx(newz == np.array([15.442, 15.676, 15.823]), 0.001)
 
     assert vc.out_crs.to_wkt() == 'VERTCRS["mllw",VDATUM["mllw"],' \
                                   'CS[vertical,1],AXIS["gravity-related height (H)",up],LENGTHUNIT["metre",1],' \
-                                  'REMARK["regions=[NCcoast11_8301,NCinner11_8301],' \
-                                  'pipeline=proj=pipeline step proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx ' \
-                                  'step proj=vgridshift grids=NCcoast11_8301\\tss.gtx ' \
-                                  'step proj=vgridshift grids=NCcoast11_8301\\mllw.gtx"]]'
+                                  'REMARK["regions=[AKglacier00_8301,AKwhale00_8301],pipeline=proj=pipeline ' \
+                                  'step proj=vgridshift grids=core\\xgeoid17b\\AK_17B.gtx step proj=vgridshift ' \
+                                  'grids=REGION\\tss.gtx step proj=vgridshift grids=REGION\\mllw.gtx"]]'
 
 
 def test_transform_dataset_inv():
@@ -119,7 +121,7 @@ def test_transform_dataset_inv():
 
     assert vc.out_crs.to_wkt() == 'VERTCRS["nad83",VDATUM["nad83"],' \
                                   'CS[vertical,1],AXIS["gravity-related height (H)",up],LENGTHUNIT["metre",1],' \
-                                  'REMARK["regions=[NCcoast11_8301,NCinner11_8301],pipeline=None"]]'
+                                  'REMARK["regions=[],pipeline="]]'
 
 
 def test_transform_dataset_unc():
@@ -171,3 +173,21 @@ def test_transform_dataset_region_index():
     assert (newz == np.array([49.490, 49.990, 50.490])).all()
     assert (newunc == np.array([0.065, 0.065, 0.065])).all()  # ncinner.mllw=1.5, conus.navd88=5.0
     assert np.array(vc.regions)[newregion].tolist() == ['NCinner11_8301', 'NCinner11_8301', 'NCinner11_8301']
+
+
+def test_transform_dataset_with_log():
+    logfile = os.path.join(data_folder, 'newlog.txt')
+    vc = VyperCore(logfile=logfile)
+
+    vc.set_region_by_bounds(-75.79179, 35.80674, -75.3853, 36.01585)
+    vc.set_input_datum('nad83')
+    vc.set_output_datum('mllw')
+    x = np.array([-75.79180, -75.79190, -75.79200])
+    y = np.array([36.01570, 36.01560, 36.01550])
+    z = np.array([10.5, 11.0, 11.5])
+    newx, newy, newz, _, _ = vc.transform_dataset(x, y, z, include_vdatum_uncertainty=False)
+
+    assert os.path.exists(logfile)
+    vc.logger = None
+    os.remove(logfile)
+    assert not os.path.exists(logfile)

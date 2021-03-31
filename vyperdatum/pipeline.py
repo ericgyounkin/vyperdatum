@@ -35,7 +35,7 @@ def get_regional_pipeline(from_datum: str, to_datum: str, region_name: str, is_a
     region_name: str
         A region name corrisponding to a VDatum subfolder name.
     is_alaska
-        if True, regions are in alaska, which means we need to do a string replace to go to xgeoid18b
+        if True, regions are in alaska, which means we need to do a string replace to go to xgeoid17b
 
     Raises
     ------
@@ -64,8 +64,8 @@ def get_regional_pipeline(from_datum: str, to_datum: str, region_name: str, is_a
     pipeline = ' step '.join(transformation_def)
     regional_pipeline = pipeline.replace('REGION', region_name)
     if is_alaska:
-        regional_pipeline = regional_pipeline.replace('geoid12b', 'xgeoid18b')
-        regional_pipeline = regional_pipeline.replace('g2012bu0', 'AK_18B')
+        regional_pipeline = regional_pipeline.replace('geoid12b', 'xgeoid17b')
+        regional_pipeline = regional_pipeline.replace('g2012bu0', 'AK_17B')
     return regional_pipeline
 
 
