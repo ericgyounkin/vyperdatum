@@ -38,6 +38,16 @@ class VyperCore:
         # if vdatum_directory is provided initialize VdatumData with that path
         self.vdatum = VdatumData(vdatum_directory=vdatum_directory)
 
+        self.min_x = None
+        self.min_y = None
+        self.max_x = None
+        self.max_y = None
+
+        self.geographic_min_x = None
+        self.geographic_min_y = None
+        self.geographic_max_x = None
+        self.geographic_max_y = None
+
         self.in_crs = None
         self.out_crs = None
         self.base_horiz_crs = None
@@ -63,6 +73,29 @@ class VyperCore:
         for handler in self.logger.handlers:
             handler.close()
             self.logger.removeHandler(handler)
+
+    def base_to_geographic_extents(self, input_datum: int):
+        """
+        An additional task is run on setting the input datum.  We first need to determine the nad83 geographic coordinates
+        to determine which vdatum regions apply (set_region_by_bounds).  Afterwards we call the vypercore set_input_datum
+        process.
+
+        Parameters
+        ----------
+        input_datum
+            EPSG code for the input datum of the raster
+        """
+
+        if not self.min_x or not self.min_y or not self.max_x or not self.max_y:
+            self.log_error('You must set min/max extents first, before setting input datum, as we transform the extents here', ValueError)
+
+        # epsg which lets us transform, otherwise assume raster extents are geographic
+        # transform the raster extents so we can use them to find the vdatum regions
+        transformer = Transformer.from_crs(CRS.from_epsg(input_datum), CRS.from_epsg(6319), always_xy=True)
+        self.geographic_min_x, self.geographic_min_y, _ = transformer.transform(self.min_x, self.min_y, 0)
+        self.geographic_max_x, self.geographic_max_y, _ = transformer.transform(self.max_x, self.max_y, 0)
+        self.set_region_by_bounds(self.geographic_min_x, self.geographic_min_y, self.geographic_max_x,
+                                  self.geographic_max_y)
 
     def set_region_by_bounds(self, x_min: float, y_min: float, x_max: float, y_max: float):
         """
@@ -215,7 +248,7 @@ class VyperCore:
         x, y, z = transformer.transform(x, y, z)
         return x, y, z
 
-    def set_input_datum(self, input_datum: Union[str, int], vertical: str = None):
+    def set_input_datum(self, input_datum: Union[str, int], vertical: str = None, extents: tuple = None):
         """
         Construct the input datum, using the provided identifier.  If EPSG (int) is provided, will store the source
         in self.base_horiz_crs to do a 3d/2d transformation later and assume that the input datum will be at NAD83,
@@ -229,9 +262,17 @@ class VyperCore:
             Optional, if the user enters a 2d epsg for input datum, we assume the input vertical datum is NAD83 elheight.
             Use this to force a vertical datum other than ellipsoid height, see pipeline.datum_definition keys for possible
             options for string
+        extents
+            Optional, if an epsg code is provided, we assume the user wants to do a 2d transformation.  That means either
+            the min/max values must have been set previously, or they must be provided here.
         """
 
+        if extents:
+            self.min_x, self.min_y, self.max_x, self.max_y = extents
         if isinstance(input_datum, int):
+            if not (self.min_x or self.min_y or self.max_x or self.max_y):
+                self.log_error('No min/max values found, must provide extents here if you use an EPSG code that requires a 2d transformation', ValueError)
+            self.base_to_geographic_extents(input_datum)
             self.base_horiz_crs = input_datum
             if vertical:
                 input_datum = vertical
@@ -378,7 +419,10 @@ class VyperCore:
             for cnt, region in enumerate(self.regions):
                 # get the pipeline
                 pipeline = get_transformation_pipeline(self.in_crs, self.out_crs, region, self.is_alaska())
-                tmp_x, tmp_y, tmp_z = self._run_pipeline(x, y, pipeline, z=z)
+                if pipeline:
+                    tmp_x, tmp_y, tmp_z = self._run_pipeline(x, y, pipeline, z=z)
+                else:
+                    tmp_x, tmp_y, tmp_z = x, y, z
 
                 # areas outside the coverage of the vert shift are inf
                 valid_index = ~np.isinf(tmp_z)

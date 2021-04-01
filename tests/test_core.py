@@ -144,12 +144,13 @@ def test_transform_dataset_stateplane():
     # try out the built in transform from EPSG to nad83 to get the new horiz and vert
     # if you provide an EPSG that is a 2d system, it assumes the z provided is at nad83
     vc = VyperCore()
-    vc.set_region_by_bounds(-75.79179, 35.80674, -75.3853, 36.01585)
-    vc.set_input_datum(3631)  # testing with NorthCarolina nad83 ft us
-    vc.set_output_datum('mllw')
     x = np.array([898745.505, 898736.854, 898728.203])
     y = np.array([256015.372, 256003.991, 255992.610])
     z = np.array([10.5, 11.0, 11.5])
+
+    vc.set_input_datum(3631, extents=(min(x), min(y), max(x), max(y)))  # testing with NorthCarolina nad83 ft us
+    vc.set_output_datum('mllw')
+
     newx, newy, newz, newunc, _ = vc.transform_dataset(x, y, z)
 
     assert (newx == approx(np.array([-75.7917999, -75.7918999, -75.7919999]), 0.000001))
@@ -188,6 +189,6 @@ def test_transform_dataset_with_log():
     newx, newy, newz, _, _ = vc.transform_dataset(x, y, z, include_vdatum_uncertainty=False)
 
     assert os.path.exists(logfile)
-    vc.logger = None
+    vc.close()
     os.remove(logfile)
     assert not os.path.exists(logfile)

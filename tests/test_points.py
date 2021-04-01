@@ -1,3 +1,5 @@
+from pytest import approx
+
 from vyperdatum.points import *
 
 
@@ -82,3 +84,21 @@ def test_transform_dataset_inv_geoid():
                                   'CS[vertical,1],AXIS["gravity-related height (H)",up],LENGTHUNIT["metre",1],' \
                                   'REMARK["regions=[MDVAchb12_8301],' \
                                   'pipeline=proj=pipeline step proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx"]]'
+
+
+def test_transform_dataset_2d_noop():
+    vp = VyperPoints()
+    x = np.array([898745.505, 898736.854, 898728.203])
+    y = np.array([256015.372, 256003.991, 255992.610])
+    z = np.array([10.5, 11.0, 11.5])
+    vp.transform_points(3631, 'mllw', x, y, z=z, include_vdatum_uncertainty=False, force_input_vertical_datum='mllw')
+
+    assert approx(vp.x == np.array([-75.7918, -75.7919, -75.792]), 0.0001)
+    assert approx(vp.y == np.array([36.0157, 36.0156, 36.0155]), 0.0001)
+    assert (vp.z == z).all()
+
+    assert vp.out_crs.to_wkt() == 'VERTCRS["mllw",VDATUM["mllw"],' \
+                                  'CS[vertical,1],AXIS["gravity-related height (H)",up],LENGTHUNIT["metre",1],' \
+                                  'REMARK["regions=[NCinner11_8301],' \
+                                  'pipeline=proj=pipeline step proj=vgridshift grids=core\\geoid12b\\g2012bu0.gtx step ' \
+                                  'proj=vgridshift grids=REGION\\tss.gtx step proj=vgridshift grids=REGION\\mllw.gtx"]]'

@@ -20,19 +20,11 @@ class VyperRaster(VyperCore):
         self.is_height = is_height
         self.input_wkt = None
         self.geotransform = None
-        self.min_x = None
-        self.min_y = None
-        self.max_x = None
-        self.max_y = None
+
         self.resolution_x = None
         self.resolution_y = None
         self.width = None
         self.height = None
-
-        self.geographic_min_x = None
-        self.geographic_min_y = None
-        self.geographic_max_x = None
-        self.geographic_max_y = None
 
         self.layers = []
         self.layernames = []
@@ -168,10 +160,6 @@ class VyperRaster(VyperCore):
 
     def set_input_datum(self, input_datum: int, vertical: str = None):
         """
-        An additional task is run on setting the input datum.  We first need to determine the nad83 geographic coordinates
-        to determine which vdatum regions apply (set_region_by_bounds).  Afterwards we call the vypercore set_input_datum
-        process.
-
         One difference between this method and all other VyperCore instances, is that VyperRaster relies on an EPSG
         input datum.  We must have the input datum to transform the extents to NAD83 to determine vdatum region.
 
@@ -184,16 +172,6 @@ class VyperRaster(VyperCore):
             Use this to force a vertical datum other than ellipsoid height, see pipeline.datum_definition keys for possible
             options for string
         """
-
-        if not self.min_x or not self.min_y or not self.max_x or not self.max_y:
-            self.log_error('You must initialize first, before setting input datum, as we transform the extents here', ValueError)
-
-        # epsg which lets us transform, otherwise assume raster extents are geographic
-        # transform the raster extents so we can use them to find the vdatum regions
-        transformer = Transformer.from_crs(CRS.from_epsg(input_datum), CRS.from_epsg(6319), always_xy=True)
-        self.geographic_min_x, self.geographic_min_y, _ = transformer.transform(self.min_x, self.min_y, 0)
-        self.geographic_max_x, self.geographic_max_y, _ = transformer.transform(self.max_x, self.max_y, 0)
-        self.set_region_by_bounds(self.geographic_min_x, self.geographic_min_y, self.geographic_max_x, self.geographic_max_y)
 
         # run the core process
         super().set_input_datum(input_datum, vertical)

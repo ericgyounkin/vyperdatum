@@ -22,7 +22,8 @@ class VyperPoints(VyperCore):
         self.region_index = None
 
     def transform_points(self, input_datum: Union[str, int], output_datum: str, x: np.array, y: np.array,
-                         z: np.array = None, include_vdatum_uncertainty: bool = True, include_region_index: bool = False):
+                         z: np.array = None, include_vdatum_uncertainty: bool = True, include_region_index: bool = False,
+                         force_input_vertical_datum: str = None):
         """
         Run transform_dataset to get the vertical transformed result / 3d transformed result.
 
@@ -44,10 +45,24 @@ class VyperPoints(VyperCore):
             if True, will return the combined separation uncertainty for each point
         include_region_index
             if True, will return the integer index of the region used for each point
+        force_input_vertical_datum
+            Optional, if the user enters a 2d epsg for input datum, we assume the input vertical datum is NAD83 elheight.
+            Use this to force a vertical datum other than ellipsoid height, see pipeline.datum_definition keys for possible
+            options for string
         """
+        if not self.min_x:  # if extents not set previously, set them now
+            self.min_x = min(x)
+            self.min_y = min(y)
+            self.max_x = max(x)
+            self.max_y = max(y)
 
-        self.set_region_by_bounds(min(x), min(y), max(x), max(y))
-        self.set_input_datum(input_datum)
+        if not isinstance(input_datum, int):  # if only a vertical datum is provided we set the regions manually
+            self.set_region_by_bounds(min(x), min(y), max(x), max(y))
+        if input_datum and force_input_vertical_datum:
+            self.set_input_datum(input_datum, force_input_vertical_datum)
+        else:
+            self.set_input_datum(input_datum)
+
         self.set_output_datum(output_datum)
         self.x, self.y, self.z, self.unc, self.region_index = self.transform_dataset(x, y, z,
                                                                                      include_vdatum_uncertainty=include_vdatum_uncertainty,
